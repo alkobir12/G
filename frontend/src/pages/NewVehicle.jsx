@@ -1,0 +1,286 @@
+import React, { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
+import { Textarea } from '../components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { useNavigate } from 'react-router-dom';
+import { ArrowRight, Save, User, Car, Phone, Wrench } from 'lucide-react';
+import { services, technicians } from '../mock/data';
+import { useToast } from '../hooks/use-toast';
+import { Checkbox } from '../components/ui/checkbox';
+
+const NewVehicle = () => {
+  const navigate = useNavigate();
+  const { toast } = useToast();
+  const [formData, setFormData] = useState({
+    plateNumber: '',
+    brand: '',
+    model: '',
+    year: '',
+    color: '',
+    customerName: '',
+    customerPhone: '',
+    customerEmail: '',
+    services: [],
+    technicianId: '',
+    notes: ''
+  });
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    
+    // Validation
+    if (!formData.plateNumber || !formData.customerName || !formData.customerPhone) {
+      toast({
+        title: 'خطأ',
+        description: 'الرجاء تعبئة جميع الحقول المطلوبة',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    toast({
+      title: 'تم بنجاح',
+      description: 'تم استقبال المركبة بنجاح. سيتم إرسال رابط التتبع للعميل.',
+    });
+
+    setTimeout(() => {
+      navigate('/');
+    }, 1500);
+  };
+
+  const handleServiceToggle = (serviceId) => {
+    setFormData(prev => ({
+      ...prev,
+      services: prev.services.includes(serviceId)
+        ? prev.services.filter(id => id !== serviceId)
+        : [...prev.services, serviceId]
+    }));
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100" dir="rtl">
+      <div className="container mx-auto p-6 max-w-4xl">
+        {/* Header */}
+        <div className="flex items-center gap-4 mb-8">
+          <Button 
+            variant="outline" 
+            onClick={() => navigate('/')}
+            className="hover:bg-slate-100 transition-colors"
+          >
+            <ArrowRight size={20} />
+          </Button>
+          <div>
+            <h1 className="text-3xl font-bold text-slate-800">استقبال مركبة جديدة</h1>
+            <p className="text-slate-600">تعبئة بيانات المركبة والعميل</p>
+          </div>
+        </div>
+
+        <form onSubmit={handleSubmit}>
+          {/* Vehicle Information */}
+          <Card className="mb-6 shadow-lg">
+            <CardHeader className="bg-gradient-to-l from-blue-50 to-transparent">
+              <CardTitle className="flex items-center gap-2 text-blue-900">
+                <Car size={24} />
+                بيانات المركبة
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="plateNumber" className="text-slate-700 mb-2 block">رقم اللوحة *</Label>
+                  <Input
+                    id="plateNumber"
+                    placeholder="أ ب ج 1234"
+                    value={formData.plateNumber}
+                    onChange={(e) => setFormData({...formData, plateNumber: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="brand" className="text-slate-700 mb-2 block">الماركة *</Label>
+                  <Input
+                    id="brand"
+                    placeholder="تويوتا، هوندا، نيسان..."
+                    value={formData.brand}
+                    onChange={(e) => setFormData({...formData, brand: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="model" className="text-slate-700 mb-2 block">الموديل *</Label>
+                  <Input
+                    id="model"
+                    placeholder="كامري، أكورد، التيما..."
+                    value={formData.model}
+                    onChange={(e) => setFormData({...formData, model: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="year" className="text-slate-700 mb-2 block">السنة *</Label>
+                  <Input
+                    id="year"
+                    type="number"
+                    placeholder="2020"
+                    value={formData.year}
+                    onChange={(e) => setFormData({...formData, year: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="color" className="text-slate-700 mb-2 block">اللون</Label>
+                  <Input
+                    id="color"
+                    placeholder="أبيض، أسود، فضي..."
+                    value={formData.color}
+                    onChange={(e) => setFormData({...formData, color: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Customer Information */}
+          <Card className="mb-6 shadow-lg">
+            <CardHeader className="bg-gradient-to-l from-green-50 to-transparent">
+              <CardTitle className="flex items-center gap-2 text-green-900">
+                <User size={24} />
+                بيانات العميل
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-6 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <Label htmlFor="customerName" className="text-slate-700 mb-2 block">الاسم *</Label>
+                  <Input
+                    id="customerName"
+                    placeholder="محمد أحمد"
+                    value={formData.customerName}
+                    onChange={(e) => setFormData({...formData, customerName: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                    required
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="customerPhone" className="text-slate-700 mb-2 block">رقم الجوال *</Label>
+                  <Input
+                    id="customerPhone"
+                    placeholder="0501234567"
+                    value={formData.customerPhone}
+                    onChange={(e) => setFormData({...formData, customerPhone: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                    required
+                  />
+                </div>
+                <div className="md:col-span-2">
+                  <Label htmlFor="customerEmail" className="text-slate-700 mb-2 block">البريد الإلكتروني</Label>
+                  <Input
+                    id="customerEmail"
+                    type="email"
+                    placeholder="example@email.com"
+                    value={formData.customerEmail}
+                    onChange={(e) => setFormData({...formData, customerEmail: e.target.value})}
+                    className="border-slate-300 focus:border-blue-500 transition-colors"
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Services */}
+          <Card className="mb-6 shadow-lg">
+            <CardHeader className="bg-gradient-to-l from-orange-50 to-transparent">
+              <CardTitle className="flex items-center gap-2 text-orange-900">
+                <Wrench size={24} />
+                الخدمات المطلوبة
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {services.map(service => (
+                  <div key={service.id} className="flex items-center space-x-2 space-x-reverse p-3 rounded-lg hover:bg-slate-50 transition-colors">
+                    <Checkbox
+                      id={`service-${service.id}`}
+                      checked={formData.services.includes(service.id)}
+                      onCheckedChange={() => handleServiceToggle(service.id)}
+                    />
+                    <label
+                      htmlFor={`service-${service.id}`}
+                      className="flex-1 cursor-pointer"
+                    >
+                      <div className="font-semibold text-slate-800">{service.name}</div>
+                      <div className="text-sm text-slate-600">{service.category} - {service.price} ريال</div>
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Assignment and Notes */}
+          <Card className="mb-6 shadow-lg">
+            <CardHeader className="bg-gradient-to-l from-purple-50 to-transparent">
+              <CardTitle className="text-purple-900">تعيين وملاحظات</CardTitle>
+            </CardHeader>
+            <CardContent className="p-6 space-y-4">
+              <div>
+                <Label htmlFor="technician" className="text-slate-700 mb-2 block">تعيين الفني</Label>
+                <Select value={formData.technicianId} onValueChange={(value) => setFormData({...formData, technicianId: value})}>
+                  <SelectTrigger className="border-slate-300 focus:border-blue-500">
+                    <SelectValue placeholder="اختر الفني المسؤول" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {technicians.map(tech => (
+                      <SelectItem key={tech.id} value={tech.id}>
+                        {tech.name} - {tech.specialty}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label htmlFor="notes" className="text-slate-700 mb-2 block">ملاحظات</Label>
+                <Textarea
+                  id="notes"
+                  placeholder="أي ملاحظات أو مشاكل مذكورة من العميل..."
+                  value={formData.notes}
+                  onChange={(e) => setFormData({...formData, notes: e.target.value})}
+                  className="border-slate-300 focus:border-blue-500 transition-colors min-h-32"
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Submit Button */}
+          <div className="flex gap-4">
+            <Button 
+              type="submit"
+              className="flex-1 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white py-6 text-lg shadow-lg hover:shadow-xl transition-all duration-300"
+            >
+              <Save className="ml-2" size={20} />
+              حفظ واستقبال المركبة
+            </Button>
+            <Button 
+              type="button"
+              variant="outline"
+              onClick={() => navigate('/')}
+              className="px-8 py-6 hover:bg-slate-100 transition-colors"
+            >
+              إلغاء
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+export default NewVehicle;
