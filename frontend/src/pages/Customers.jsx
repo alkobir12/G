@@ -1,0 +1,137 @@
+import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Badge } from '../components/ui/badge';
+import { customers } from '../mock/data';
+import { Users, Search, Phone, Mail, Calendar, Car, ArrowRight } from 'lucide-react';
+
+const Customers = () => {
+  const navigate = useNavigate();
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredCustomers = customers.filter(customer => 
+    customer.name.includes(searchQuery) || 
+    customer.phone.includes(searchQuery)
+  );
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100" dir="rtl">
+      <div className="container mx-auto p-6">
+        {/* Header */}
+        <div className="flex items-center gap-4 mb-8">
+          <Button 
+            variant="outline" 
+            onClick={() => navigate('/')}
+            className="hover:bg-slate-100 transition-colors"
+          >
+            <ArrowRight size={20} />
+          </Button>
+          <div>
+            <h1 className="text-4xl font-bold text-slate-800 mb-2">قائمة العملاء</h1>
+            <p className="text-slate-600">إدارة بيانات العملاء</p>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+          <Card className="bg-gradient-to-br from-blue-50 to-blue-100 border-none shadow-lg">
+            <CardContent className="p-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-blue-700 text-sm font-medium mb-1">إجمالي العملاء</p>
+                  <p className="text-3xl font-bold text-blue-900">{customers.length}</p>
+                </div>
+                <div className="bg-blue-600 p-3 rounded-full">
+                  <Users className="text-white" size={24} />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Search */}
+        <Card className="mb-6 shadow-lg">
+          <CardContent className="p-6">
+            <div className="relative">
+              <Search className="absolute right-3 top-3 text-slate-400" size={20} />
+              <Input
+                placeholder="بحث بالاسم أو رقم الجوال..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pr-10 border-slate-300 focus:border-blue-500 transition-colors"
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Customers List */}
+        <div className="grid grid-cols-1 gap-4">
+          {filteredCustomers.map(customer => (
+            <Card key={customer.id} className="shadow-md hover:shadow-xl transition-all duration-300">
+              <CardContent className="p-6">
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div className="flex items-center gap-6">
+                    <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-4 rounded-full">
+                      <Users className="text-white" size={28} />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-slate-800 mb-1">{customer.name}</h3>
+                      <div className="flex gap-4 text-sm text-slate-600">
+                        <span className="flex items-center gap-1">
+                          <Phone size={14} />
+                          {customer.phone}
+                        </span>
+                        {customer.email && (
+                          <span className="flex items-center gap-1">
+                            <Mail size={14} />
+                            {customer.email}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-6">
+                    <div className="text-center">
+                      <p className="text-2xl font-bold text-blue-600">{customer.totalVisits}</p>
+                      <p className="text-xs text-slate-500">الزيارات</p>
+                    </div>
+                    <div className="text-left">
+                      <p className="text-sm text-slate-500 mb-1">آخر زيارة</p>
+                      <p className="text-sm font-semibold text-slate-700">{new Date(customer.lastVisit).toLocaleDateString('ar-SA')}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-4 pt-4 border-t border-slate-200">
+                  <p className="text-sm text-slate-600 mb-2">المركبات:</p>
+                  <div className="flex gap-2 flex-wrap">
+                    {customer.vehicles.map((vehicle, idx) => (
+                      <Badge key={idx} className="bg-slate-100 text-slate-700 border-slate-300">
+                        <Car size={14} className="ml-1" />
+                        {vehicle}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
+        {filteredCustomers.length === 0 && (
+          <Card className="shadow-md">
+            <CardContent className="p-12 text-center">
+              <Users className="mx-auto text-slate-300 mb-4" size={64} />
+              <p className="text-slate-500 text-lg">لا توجد نتائج</p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default Customers;
