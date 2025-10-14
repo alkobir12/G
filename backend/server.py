@@ -470,7 +470,8 @@ async def root():
 
 # Include the router in the main app
 app.include_router(api_router)
-app.include_router(extended_router)  # Add extended features
+app.include_router(extended_router)  # Extended features
+app.include_router(advanced_router)  # Advanced features (Store, CEO, Support)
 
 app.add_middleware(
     CORSMiddleware,
