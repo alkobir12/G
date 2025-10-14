@@ -19,7 +19,7 @@ async def init_database():
     # Connect to MongoDB
     mongo_url = os.environ['MONGO_URL']
     client = AsyncIOMotorClient(mongo_url)
-    db = client['workshop_db']
+    db = client[os.environ.get('DB_NAME', 'workshop_db')]
     
     print("🔧 Initializing Workshop Database...")
     
