@@ -353,6 +353,11 @@ async def get_transactions(
 @api_router.post("/ai/chat", response_model=ChatResponse)
 async def chat_with_ai(chat_request: ChatRequest):
     try:
+        # Import AI enhancements
+        import sys
+        sys.path.append(str(ROOT_DIR))
+        from ai_enhancements import build_enhanced_prompt, search_knowledge_base
+        
         # Get or create session
         session_id = chat_request.sessionId or str(uuid.uuid4())
         session = await db.chat_sessions.find_one({"id": session_id})
@@ -361,17 +366,31 @@ async def chat_with_ai(chat_request: ChatRequest):
             session = ChatSession(id=session_id).dict()
             await db.chat_sessions.insert_one(session)
         
-        # Initialize Claude AI
+        # البحث في قاعدة المعرفة أولاً
+        kb_results = search_knowledge_base(chat_request.message)
+        
+        # بناء prompt محسّن
+        enhanced_prompt = build_enhanced_prompt(chat_request.message)
+        
+        # Initialize Claude AI مع prompt محسّن
         llm_key = os.getenv('EMERGENT_LLM_KEY')
         chat = LlmChat(
             api_key=llm_key,
             session_id=session_id,
-            system_message="أنت مساعد ذكاء اصطناعي متخصص في صيانة وإصلاح السيارات. تقدم نصائح فنية، تشخيص المشاكل، معلومات عن قطع الغيار، وإرشادات الصيانة. الرجاء الإجابة باللغة العربية بشكل واضح ومفيد."
+            system_message=enhanced_prompt
         ).with_model("anthropic", "claude-3-7-sonnet-20250219")
         
         # Send message
         user_message = UserMessage(text=chat_request.message)
         response = await chat.send_message(user_message)
+        
+        # إذا وجدنا نتائج في قاعدة المعرفة، نضيفها للرد
+        if kb_results:
+            kb_summary = "\n\n📚 من قاعدة المعرفة:\n"
+            for result in kb_results[:1]:
+                kb_summary += f"• المشكلة: {result['problem']}\n"
+                kb_summary += f"• التكلفة المتوقعة: {result['estimated_cost']} ريال\n"
+            response = response + kb_summary
         
         # Save messages to database
         user_msg = ChatMessage(role="user", content=chat_request.message)
