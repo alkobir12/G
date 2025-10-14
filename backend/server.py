@@ -22,6 +22,9 @@ from models import (
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
+# Import extended routes
+from routes_extended import router as extended_router
+
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
