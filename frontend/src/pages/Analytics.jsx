@@ -407,47 +407,6 @@ const Analytics = () => {
 };
 
 export default Analytics;
-
-  return (
-    <Layout>
-      <div className="min-h-screen" dir="rtl">
-        <div className="container mx-auto p-6">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-8">
-            <div>
-              <h1 className="text-4xl font-bold text-slate-800 mb-2">التحليلات والتقارير</h1>
-              <p className="text-slate-600">نظرة شاملة على أداء الورشة</p>
-            </div>
-          </div>
-
-          {/* Main Financial Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-            {/* Income */}
-            <Card className="bg-gradient-to-br from-green-50 to-green-100 border-none shadow-lg hover:shadow-xl transition-all">
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-green-700 text-sm font-medium mb-1">المبيعات (الشهر الحالي)</p>
-                    <p className="text-3xl font-bold text-green-900">{stats.thisMonth.income.toLocaleString()} ر.س</p>
-                    <div className="flex items-center gap-1 mt-2">
-                      <TrendingUp className="text-green-600" size={16} />
-                      <span className="text-sm text-green-700">+12% عن الشهر الماضي</span>
-                    </div>
-                  </div>
-                  <div className="bg-green-600 p-3 rounded-full">
-                    <DollarSign className="text-white" size={24} />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Expenses */}
-            <Card className="bg-gradient-to-br from-red-50 to-red-100 border-none shadow-lg hover:shadow-xl transition-all">
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-red-700 text-sm font-medium mb-1">المصروفات (الشهر الحالي)</p>
-                    <p className="text-3xl font-bold text-red-900">{stats.thisMonth.expenses.toLocaleString()} ر.س</p>
                     <div className="flex items-center gap-1 mt-2">
                       <TrendingDown className="text-red-600" size={16} />
                       <span className="text-sm text-red-700">-5% عن الشهر الماضي</span>
