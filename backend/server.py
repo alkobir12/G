@@ -1,15 +1,26 @@
-from fastapi import FastAPI, APIRouter
+from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List
+from typing import List, Optional
+from datetime import datetime, timedelta
 import uuid
-from datetime import datetime, timezone
+import shutil
 
+from models import (
+    Vehicle, VehicleCreate, VehicleUpdate,
+    Customer, Technician, Service,
+    Part, PartCreate, PartUpdate,
+    Invoice, InvoiceCreate,
+    Transaction, TransactionCreate,
+    ChatRequest, ChatResponse, ChatSession, ChatMessage
+)
+
+from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -17,65 +28,17 @@ load_dotenv(ROOT_DIR / '.env')
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+db = client['workshop_db']
 
-# Create the main app without a prefix
-app = FastAPI()
+# Create upload directory
+UPLOAD_DIR = ROOT_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# Create the main app
+app = FastAPI(title="Workshop Management API")
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
-
-
-# Define Models
-class StatusCheck(BaseModel):
-    model_config = ConfigDict(extra="ignore")  # Ignore MongoDB's _id field
-    
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.model_dump()
-    status_obj = StatusCheck(**status_dict)
-    
-    # Convert to dict and serialize datetime to ISO string for MongoDB
-    doc = status_obj.model_dump()
-    doc['timestamp'] = doc['timestamp'].isoformat()
-    
-    _ = await db.status_checks.insert_one(doc)
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    # Exclude MongoDB's _id field from the query results
-    status_checks = await db.status_checks.find({}, {"_id": 0}).to_list(1000)
-    
-    # Convert ISO string timestamps back to datetime objects
-    for check in status_checks:
-        if isinstance(check['timestamp'], str):
-            check['timestamp'] = datetime.fromisoformat(check['timestamp'])
-    
-    return status_checks
-
-# Include the router in the main app
-app.include_router(api_router)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Configure logging
 logging.basicConfig(
@@ -83,6 +46,430 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ============ Helper Functions ============
+def generate_tracking_link():
+    return f"TRK-{str(uuid.uuid4())[:8].upper()}"
+
+def generate_invoice_number():
+    return f"INV-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+
+async def get_or_create_customer(name: str, phone: str, email: Optional[str] = None):
+    customer = await db.customers.find_one({"phone": phone})
+    if customer:
+        return customer['id']
+    
+    new_customer = Customer(
+        name=name,
+        phone=phone,
+        email=email,
+        totalVisits=1,
+        lastVisit=datetime.utcnow()
+    )
+    await db.customers.insert_one(new_customer.dict())
+    return new_customer.id
+
+# ============ Vehicle APIs ============
+@api_router.post("/vehicles", response_model=Vehicle)
+async def create_vehicle(vehicle_data: VehicleCreate):
+    try:
+        # Get or create customer
+        customer_id = await get_or_create_customer(
+            vehicle_data.customerName,
+            vehicle_data.customerPhone,
+            vehicle_data.customerEmail
+        )
+        
+        # Create vehicle
+        vehicle = Vehicle(
+            **vehicle_data.dict(),
+            customerId=customer_id,
+            trackingLink=generate_tracking_link(),
+            estimatedCompletion=datetime.utcnow() + timedelta(days=2)
+        )
+        
+        await db.vehicles.insert_one(vehicle.dict())
+        
+        # Update customer
+        await db.customers.update_one(
+            {"id": customer_id},
+            {
+                "$addToSet": {"vehicles": vehicle.plateNumber},
+                "$inc": {"totalVisits": 1},
+                "$set": {"lastVisit": datetime.utcnow()}
+            }
+        )
+        
+        return vehicle
+    except Exception as e:
+        logger.error(f"Error creating vehicle: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/vehicles", response_model=List[Vehicle])
+async def get_vehicles(status: Optional[str] = None, search: Optional[str] = None):
+    try:
+        query = {}
+        if status:
+            query["status"] = status
+        if search:
+            query["$or"] = [
+                {"plateNumber": {"$regex": search, "$options": "i"}},
+                {"customerName": {"$regex": search, "$options": "i"}}
+            ]
+        
+        vehicles = await db.vehicles.find(query).sort("entryDate", -1).to_list(1000)
+        return [Vehicle(**v) for v in vehicles]
+    except Exception as e:
+        logger.error(f"Error getting vehicles: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/vehicles/{vehicle_id}", response_model=Vehicle)
+async def get_vehicle(vehicle_id: str):
+    vehicle = await db.vehicles.find_one({"id": vehicle_id})
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    return Vehicle(**vehicle)
+
+@api_router.get("/vehicles/track/{tracking_link}", response_model=Vehicle)
+async def track_vehicle(tracking_link: str):
+    vehicle = await db.vehicles.find_one({"trackingLink": tracking_link})
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Invalid tracking link")
+    return Vehicle(**vehicle)
+
+@api_router.put("/vehicles/{vehicle_id}", response_model=Vehicle)
+async def update_vehicle(vehicle_id: str, update_data: VehicleUpdate):
+    vehicle = await db.vehicles.find_one({"id": vehicle_id})
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    
+    update_dict = {k: v for k, v in update_data.dict().items() if v is not None}
+    
+    if update_dict:
+        await db.vehicles.update_one({"id": vehicle_id}, {"$set": update_dict})
+        vehicle = await db.vehicles.find_one({"id": vehicle_id})
+    
+    return Vehicle(**vehicle)
+
+# ============ Customer APIs ============
+@api_router.get("/customers", response_model=List[Customer])
+async def get_customers(search: Optional[str] = None):
+    try:
+        query = {}
+        if search:
+            query["$or"] = [
+                {"name": {"$regex": search, "$options": "i"}},
+                {"phone": {"$regex": search, "$options": "i"}}
+            ]
+        
+        customers = await db.customers.find(query).sort("lastVisit", -1).to_list(1000)
+        return [Customer(**c) for c in customers]
+    except Exception as e:
+        logger.error(f"Error getting customers: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/customers/{customer_id}", response_model=Customer)
+async def get_customer(customer_id: str):
+    customer = await db.customers.find_one({"id": customer_id})
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return Customer(**customer)
+
+@api_router.get("/customers/{customer_id}/history")
+async def get_customer_history(customer_id: str):
+    """Get complete visit history for a customer"""
+    vehicles = await db.vehicles.find({"customerId": customer_id}).sort("entryDate", -1).to_list(1000)
+    invoices = await db.invoices.find({"customerId": customer_id}).sort("createdAt", -1).to_list(1000)
+    
+    return {
+        "vehicles": [Vehicle(**v) for v in vehicles],
+        "invoices": [Invoice(**i) for i in invoices]
+    }
+
+# ============ Technician APIs ============
+@api_router.get("/technicians", response_model=List[Technician])
+async def get_technicians():
+    technicians = await db.technicians.find().to_list(1000)
+    return [Technician(**t) for t in technicians]
+
+@api_router.get("/technicians/{tech_id}", response_model=Technician)
+async def get_technician(tech_id: str):
+    tech = await db.technicians.find_one({"id": tech_id})
+    if not tech:
+        raise HTTPException(status_code=404, detail="Technician not found")
+    return Technician(**tech)
+
+# ============ Service APIs ============
+@api_router.get("/services", response_model=List[Service])
+async def get_services():
+    services = await db.services.find().to_list(1000)
+    return [Service(**s) for s in services]
+
+# ============ Parts APIs ============
+@api_router.post("/parts", response_model=Part)
+async def create_part(part_data: PartCreate):
+    part = Part(**part_data.dict())
+    await db.parts.insert_one(part.dict())
+    return part
+
+@api_router.get("/parts", response_model=List[Part])
+async def get_parts(search: Optional[str] = None, low_stock: bool = False):
+    query = {}
+    if search:
+        query["$or"] = [
+            {"partNumber": {"$regex": search, "$options": "i"}},
+            {"name": {"$regex": search, "$options": "i"}}
+        ]
+    if low_stock:
+        query["$expr"] = {"$lte": ["$quantity", "$minQuantity"]}
+    
+    parts = await db.parts.find(query).to_list(1000)
+    return [Part(**p) for p in parts]
+
+@api_router.get("/parts/{part_id}", response_model=Part)
+async def get_part(part_id: str):
+    part = await db.parts.find_one({"id": part_id})
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found")
+    return Part(**part)
+
+@api_router.put("/parts/{part_id}", response_model=Part)
+async def update_part(part_id: str, update_data: PartUpdate):
+    part = await db.parts.find_one({"id": part_id})
+    if not part:
+        raise HTTPException(status_code=404, detail="Part not found")
+    
+    update_dict = {k: v for k, v in update_data.dict().items() if v is not None}
+    update_dict["updatedAt"] = datetime.utcnow()
+    
+    if update_dict:
+        await db.parts.update_one({"id": part_id}, {"$set": update_dict})
+        part = await db.parts.find_one({"id": part_id})
+    
+    return Part(**part)
+
+@api_router.delete("/parts/{part_id}")
+async def delete_part(part_id: str):
+    result = await db.parts.delete_one({"id": part_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Part not found")
+    return {"message": "Part deleted successfully"}
+
+# ============ Invoice APIs ============
+@api_router.post("/invoices", response_model=Invoice)
+async def create_invoice(invoice_data: InvoiceCreate):
+    invoice = Invoice(
+        **invoice_data.dict(),
+        invoiceNumber=generate_invoice_number()
+    )
+    await db.invoices.insert_one(invoice.dict())
+    
+    # Update parts quantity if parts were used
+    for item in invoice_data.items:
+        if item.type == "part":
+            await db.parts.update_one(
+                {"id": item.itemId},
+                {"$inc": {"quantity": -item.quantity}}
+            )
+    
+    # Create income transaction
+    if invoice_data.type == "service":
+        transaction = Transaction(
+            type="income",
+            category="service",
+            amount=invoice_data.total,
+            description=f"Invoice {invoice.invoiceNumber}",
+            paymentMethod=invoice_data.paymentMethod,
+            reference=invoice.invoiceNumber
+        )
+        await db.transactions.insert_one(transaction.dict())
+    
+    return invoice
+
+@api_router.get("/invoices", response_model=List[Invoice])
+async def get_invoices(vehicle_id: Optional[str] = None, customer_id: Optional[str] = None):
+    query = {}
+    if vehicle_id:
+        query["vehicleId"] = vehicle_id
+    if customer_id:
+        query["customerId"] = customer_id
+    
+    invoices = await db.invoices.find(query).sort("createdAt", -1).to_list(1000)
+    return [Invoice(**i) for i in invoices]
+
+@api_router.get("/invoices/{invoice_id}", response_model=Invoice)
+async def get_invoice(invoice_id: str):
+    invoice = await db.invoices.find_one({"id": invoice_id})
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return Invoice(**invoice)
+
+# ============ Transaction APIs ============
+@api_router.post("/transactions", response_model=Transaction)
+async def create_transaction(transaction_data: TransactionCreate):
+    transaction = Transaction(**transaction_data.dict())
+    await db.transactions.insert_one(transaction.dict())
+    return transaction
+
+@api_router.get("/transactions")
+async def get_transactions(
+    type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None
+):
+    query = {}
+    if type:
+        query["type"] = type
+    if start_date and end_date:
+        query["date"] = {
+            "$gte": datetime.fromisoformat(start_date),
+            "$lte": datetime.fromisoformat(end_date)
+        }
+    
+    transactions = await db.transactions.find(query).sort("date", -1).to_list(1000)
+    
+    # Calculate totals
+    income = sum(t["amount"] for t in transactions if t["type"] == "income")
+    expenses = sum(t["amount"] for t in transactions if t["type"] == "expense")
+    
+    return {
+        "transactions": [Transaction(**t) for t in transactions],
+        "summary": {
+            "income": income,
+            "expenses": expenses,
+            "profit": income - expenses
+        }
+    }
+
+# ============ AI Assistant APIs ============
+@api_router.post("/ai/chat", response_model=ChatResponse)
+async def chat_with_ai(chat_request: ChatRequest):
+    try:
+        # Get or create session
+        session_id = chat_request.sessionId or str(uuid.uuid4())
+        session = await db.chat_sessions.find_one({"id": session_id})
+        
+        if not session:
+            session = ChatSession(id=session_id).dict()
+            await db.chat_sessions.insert_one(session)
+        
+        # Initialize Claude AI
+        llm_key = os.getenv('EMERGENT_LLM_KEY')
+        chat = LlmChat(
+            api_key=llm_key,
+            session_id=session_id,
+            system_message="أنت مساعد ذكاء اصطناعي متخصص في صيانة وإصلاح السيارات. تقدم نصائح فنية، تشخيص المشاكل، معلومات عن قطع الغيار، وإرشادات الصيانة. الرجاء الإجابة باللغة العربية بشكل واضح ومفيد."
+        ).with_model("anthropic", "claude-3-7-sonnet-20250219")
+        
+        # Send message
+        user_message = UserMessage(text=chat_request.message)
+        response = await chat.send_message(user_message)
+        
+        # Save messages to database
+        user_msg = ChatMessage(role="user", content=chat_request.message)
+        assistant_msg = ChatMessage(role="assistant", content=response)
+        
+        await db.chat_sessions.update_one(
+            {"id": session_id},
+            {
+                "$push": {
+                    "messages": {
+                        "$each": [user_msg.dict(), assistant_msg.dict()]
+                    }
+                },
+                "$set": {"updatedAt": datetime.utcnow()}
+            }
+        )
+        
+        return ChatResponse(response=response, sessionId=session_id)
+        
+    except Exception as e:
+        logger.error(f"Error in AI chat: {e}")
+        raise HTTPException(status_code=500, detail=f"AI Error: {str(e)}")
+
+@api_router.get("/ai/sessions/{session_id}")
+async def get_chat_session(session_id: str):
+    session = await db.chat_sessions.find_one({"id": session_id})
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return ChatSession(**session)
+
+# ============ File Upload APIs ============
+@api_router.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    try:
+        file_ext = file.filename.split('.')[-1]
+        file_name = f"{uuid.uuid4()}.{file_ext}"
+        file_path = UPLOAD_DIR / file_name
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        return {"url": f"/api/files/{file_name}", "filename": file_name}
+    except Exception as e:
+        logger.error(f"Error uploading file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.get("/files/{filename}")
+async def get_file(filename: str):
+    file_path = UPLOAD_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(file_path)
+
+# ============ Dashboard Stats API ============
+@api_router.get("/stats")
+async def get_dashboard_stats():
+    total_vehicles = await db.vehicles.count_documents({})
+    in_progress = await db.vehicles.count_documents({"status": {"$ne": "ready"}})
+    ready = await db.vehicles.count_documents({"status": "ready"})
+    total_customers = await db.customers.count_documents({})
+    total_technicians = await db.technicians.count_documents({})
+    low_stock_parts = await db.parts.count_documents({"$expr": {"$lte": ["$quantity", "$minQuantity"]}})
+    
+    # Get this month's revenue
+    start_of_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    monthly_income = await db.transactions.aggregate([
+        {"$match": {"type": "income", "date": {"$gte": start_of_month}}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]).to_list(1)
+    
+    monthly_expenses = await db.transactions.aggregate([
+        {"$match": {"type": "expense", "date": {"$gte": start_of_month}}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]).to_list(1)
+    
+    return {
+        "vehicles": {
+            "total": total_vehicles,
+            "inProgress": in_progress,
+            "ready": ready
+        },
+        "customers": total_customers,
+        "technicians": total_technicians,
+        "lowStockParts": low_stock_parts,
+        "thisMonth": {
+            "income": monthly_income[0]["total"] if monthly_income else 0,
+            "expenses": monthly_expenses[0]["total"] if monthly_expenses else 0,
+            "profit": (monthly_income[0]["total"] if monthly_income else 0) - (monthly_expenses[0]["total"] if monthly_expenses else 0)
+        }
+    }
+
+# Root endpoint
+@api_router.get("/")
+async def root():
+    return {"message": "Workshop Management API", "version": "1.0.0"}
+
+# Include the router in the main app
+app.include_router(api_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
