@@ -23,7 +23,8 @@ from models import (
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 
 # Import extended routes
-from routes_extended import router as extended_router, set_db
+from routes_extended import router as extended_router, set_db as set_db_extended
+from routes_advanced import router as advanced_router, set_db as set_db_advanced
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -33,8 +34,9 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client['workshop_db']
 
-# Set database for extended routes
-set_db(db)
+# Set database for extended and advanced routes
+set_db_extended(db)
+set_db_advanced(db)
 
 # Create upload directory
 UPLOAD_DIR = ROOT_DIR / "uploads"
