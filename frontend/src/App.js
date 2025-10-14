@@ -10,6 +10,7 @@ import Customers from "./pages/Customers";
 import Technicians from "./pages/Technicians";
 import AIAssistant from "./pages/AIAssistant";
 import Analytics from "./pages/Analytics";
+import PartsInventory from "./pages/PartsInventory";
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
           <Route path="/technicians" element={<Technicians />} />
           <Route path="/ai-assistant" element={<AIAssistant />} />
           <Route path="/analytics" element={<Analytics />} />
+          <Route path="/parts" element={<PartsInventory />} />
         </Routes>
       </BrowserRouter>
       <Toaster />
