@@ -465,6 +465,7 @@ async def root():
 
 # Include the router in the main app
 app.include_router(api_router)
+app.include_router(extended_router)  # Add extended features
 
 app.add_middleware(
     CORSMiddleware,
