@@ -32,7 +32,7 @@ load_dotenv(ROOT_DIR / '.env')
 # MongoDB connection
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
-db = client['workshop_db']
+db = client[os.environ.get('DB_NAME', 'workshop_db')]
 
 # Set database for extended and advanced routes
 set_db_extended(db)
