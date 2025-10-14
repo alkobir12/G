@@ -421,6 +421,99 @@ async def get_chat_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     return ChatSession(**session)
 
+# ============ CEO AI Assistant ============
+@api_router.post("/ceo/ai-analysis")
+async def ceo_ai_analysis(question: str):
+    """CEO Bot - يحلل البيانات ويعطي توصيات ذكية"""
+    try:
+        import sys
+        sys.path.append(str(ROOT_DIR))
+        from ai_enhancements import analyze_business_health, generate_ceo_insights
+        
+        # Get current metrics
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=30)
+        
+        transactions = await db.transactions.find({
+            "date": {"$gte": start_date, "$lte": end_date}
+        }).to_list(10000)
+        
+        vehicles = await db.vehicles.find({
+            "entryDate": {"$gte": start_date, "$lte": end_date}
+        }).to_list(10000)
+        
+        feedbacks = await db.customer_feedback.find({
+            "createdAt": {"$gte": start_date}
+        }).to_list(1000)
+        
+        # Calculate metrics
+        revenue = sum(t['amount'] for t in transactions if t['type'] == 'income')
+        expenses = sum(t['amount'] for t in transactions if t['type'] == 'expense')
+        profit = revenue - expenses
+        avg_satisfaction = sum(f['overallRating'] for f in feedbacks) / len(feedbacks) if feedbacks else 4.5
+        
+        metrics = {
+            "revenue": revenue,
+            "expenses": expenses,
+            "profit": profit,
+            "profitMargin": (profit / revenue * 100) if revenue > 0 else 0,
+            "vehiclesServiced": len(vehicles),
+            "customerSatisfaction": avg_satisfaction,
+            "cashFlow": revenue - expenses,
+            "newCustomers": len(set(v['customerId'] for v in vehicles))
+        }
+        
+        # Analyze business health
+        analysis = analyze_business_health(metrics)
+        insights = generate_ceo_insights(metrics, "الشهر الحالي")
+        
+        # Build context for AI
+        context = f"""
+أنت مستشار أعمال وCEO مساعد ذكي. لديك البيانات التالية عن الورشة:
+
+📊 **الأداء المالي (آخر 30 يوم):**
+- الإيرادات: {revenue:,.0f} ريال
+- المصروفات: {expenses:,.0f} ريال
+- صافي الربح: {profit:,.0f} ريال
+- هامش الربح: {metrics['profitMargin']:.1f}%
+
+🚗 **الأداء التشغيلي:**
+- عدد المركبات: {len(vehicles)}
+- عملاء جدد: {metrics['newCustomers']}
+- رضا العملاء: {avg_satisfaction:.1f}/5
+
+⚠️ **التنبيهات:**
+{chr(10).join('- ' + alert['message'] for alert in analysis['alerts'])}
+
+💡 **التوصيات الحالية:**
+{chr(10).join('- ' + rec for rec in analysis['recommendations'])}
+
+سؤال المدير: {question}
+
+الرجاء تقديم تحليل عميق وتوصيات قابلة للتنفيذ باللغة العربية.
+"""
+        
+        # Ask Claude AI
+        llm_key = os.getenv('EMERGENT_LLM_KEY')
+        chat = LlmChat(
+            api_key=llm_key,
+            session_id=str(uuid.uuid4()),
+            system_message="أنت مستشار أعمال وCEO مساعد متخصص في إدارة ورش السيارات. تحلل البيانات وتقدم توصيات استراتيجية."
+        ).with_model("anthropic", "claude-3-7-sonnet-20250219")
+        
+        response = await chat.send_message(UserMessage(text=context))
+        
+        return {
+            "response": response,
+            "metrics": metrics,
+            "analysis": analysis,
+            "insights": insights
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in CEO AI: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ============ File Upload APIs ============
 @api_router.post("/upload")
 async def upload_file(file: UploadFile = File(...)):
