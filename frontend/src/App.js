@@ -9,6 +9,7 @@ import CustomerTracking from "./pages/CustomerTracking";
 import Customers from "./pages/Customers";
 import Technicians from "./pages/Technicians";
 import AIAssistant from "./pages/AIAssistant";
+import Analytics from "./pages/Analytics";
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
           <Route path="/customers" element={<Customers />} />
           <Route path="/technicians" element={<Technicians />} />
           <Route path="/ai-assistant" element={<AIAssistant />} />
+          <Route path="/analytics" element={<Analytics />} />
         </Routes>
       </BrowserRouter>
       <Toaster />
