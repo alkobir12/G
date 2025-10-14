@@ -8,7 +8,6 @@ import {
   Users, 
   Wrench, 
   Brain, 
-  Settings,
   X
 } from 'lucide-react';
 
