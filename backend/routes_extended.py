@@ -1,8 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timedelta
 from typing import List, Optional
-import os
 
 from models_extended import (
     Appointment, AppointmentCreate,
@@ -12,13 +10,15 @@ from models_extended import (
     Supplier, PurchaseOrder, WorkshopProfile
 )
 
-# Database
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client['workshop_db']
-
 # Router
 router = APIRouter(prefix="/api")
+
+# Database will be injected from server.py
+db = None
+
+def set_db(database):
+    global db
+    db = database
 
 # ============ Appointments APIs ============
 @router.post("/appointments", response_model=Appointment)
