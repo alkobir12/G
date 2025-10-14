@@ -199,6 +199,7 @@ const Dashboard = () => {
           </Card>
         )}
       </div>
+      </div>
     </Layout>
   );
 };
