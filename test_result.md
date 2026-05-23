@@ -101,3 +101,126 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  Workshop Management System (نظام إدارة ورش الميكانيكا) — an Arabic-RTL automotive
+  repair shop manager. Backend: FastAPI + MongoDB + emergentintegrations.
+  Frontend: React 19 + CRA + craco + Tailwind + Radix UI.
+  User direction: keep the existing Workshop Management app (NOT migrate to the
+  uploaded Parts Pro artifact). The artifact is for reference only.
+  Phase 1 scope: Restore & Run only — recreate .env files, fix supervisor, ensure
+  /api/openapi.json is reachable, seed DB, confirm preview URL renders.
+
+backend:
+  - task: "Backend env restore (MONGO_URL, DB_NAME, CORS_ORIGINS, EMERGENT_LLM_KEY)"
+    implemented: true
+    working: true
+    file: "backend/.env"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Created /app/backend/.env with MONGO_URL=mongodb://localhost:27017, DB_NAME=workshop_db, CORS_ORIGINS=*, EMERGENT_LLM_KEY=<universal key>. Backend boots cleanly; verified KeyError resolved."
+
+  - task: "FastAPI openapi exposed under /api prefix"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Updated FastAPI(...) constructor: openapi_url='/api/openapi.json', docs_url='/api/docs', redoc_url='/api/redoc'. Confirmed HTTP 200 on /api/openapi.json via preview URL."
+
+  - task: "Seed demo data via init_data.py"
+    implemented: true
+    working: true
+    file: "backend/init_data.py"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Ran init_data.py: 4 technicians, 15 services, 8 parts inserted. Verified via GET /api/technicians, GET /api/parts, GET /api/stats (technicians=4)."
+
+  - task: "Smoke test core API endpoints"
+    implemented: true
+    working: true
+    file: "backend/server.py"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "GET /api/ -> 200 (Workshop Management API), GET /api/stats -> 200, GET /api/technicians -> 200 with 4 entries, GET /api/parts -> 200 with 8 entries. Total of 73 routes discovered in OpenAPI schema."
+
+frontend:
+  - task: "Frontend env restore (REACT_APP_BACKEND_URL, WDS_SOCKET_PORT)"
+    implemented: true
+    working: true
+    file: "frontend/.env"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Created /app/frontend/.env with REACT_APP_BACKEND_URL=https://3cebdbec-b1df-4a4e-a3ea-d70221702bdc.preview.emergentagent.com and WDS_SOCKET_PORT=443. Restarted frontend; webpack compiled successfully."
+
+  - task: "Preview URL renders dashboard"
+    implemented: true
+    working: true
+    file: "frontend/src/App.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Preview URL returns 200. Dashboard renders Arabic RTL UI with sidebar (لوحة التحكم, التحليلات, المخزون, العملاء, الفنيين, المساعد الذكي) and vehicle cards. NOTE: Dashboard currently shows mock vehicle cards (أ ب ج 1234 etc.) — mock data has not yet been replaced with backend calls (per contracts.md, this was a planned migration). Out of Phase 1 scope; flagged for Phase 2."
+
+infrastructure:
+  - task: "Remove stale mobile supervisor program"
+    implemented: true
+    working: true
+    file: "/etc/supervisor/conf.d/supervisord.conf"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Commented out [program:mobile] block in supervisord.conf because /app/mobile/ no longer exists. Ran supervisorctl reread && update; mobile program removed cleanly."
+
+metadata:
+  created_by: "main_agent"
+  version: "1.0"
+  test_sequence: 0
+  run_ui: false
+  phase: "1 — restore & run (DONE, awaiting user direction for Phase 2)"
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Phase 1 complete. Backend + frontend restored from missing-.env state and
+      running cleanly via supervisor. /api/openapi.json reachable on preview URL.
+      DB seeded with demo technicians/services/parts. No automated tests run
+      yet — awaiting user approval before invoking deep_testing_backend_v2 or
+      proceeding to Phase 2 bug fixes / enhancements.
+
+      Known gap (NOT fixed in Phase 1, out of scope):
+        - Dashboard.jsx still imports mock data instead of calling backend
+          /api/vehicles. Frontend shows hardcoded sample vehicles regardless of
+          DB state. Flagged for Phase 2.

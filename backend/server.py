@@ -43,7 +43,12 @@ UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 # Create the main app
-app = FastAPI(title="Workshop Management API")
+app = FastAPI(
+    title="Workshop Management API",
+    openapi_url="/api/openapi.json",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+)
 
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
