@@ -2,8 +2,9 @@
 //   DataManagementPanel.tsx — seed + wipe buttons on the Settings page
 // ═══════════════════════════════════════════════════════════════
 import { useState } from "react";
-import { Database, Sparkles, Trash2 } from "lucide-react";
-import { apiClient, backendSyncAll, apiDelete, apiGet } from "../services/apiClient";
+import { Database, Sparkles, Trash2, CheckCircle, XCircle } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { apiPost, backendSyncAll } from "../services/apiClient";
 import {
   MITSUBISHI_PARTS, INVOICE_PARTS, SEED_SUPPLIERS, SEED_CUSTOMERS,
   SEED_INVOICES, SEED_PURCHASES, SEED_EXPENSES, SEED_ACCOUNTS,
@@ -18,11 +19,30 @@ interface Props {
   addToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
+interface WipeResponse {
+  success: boolean;
+  deleted: Record<string, number | string>;
+}
+
+const WIPE_TABLES_LABEL: Record<string, string> = {
+  liquid_transactions: "حركات السوائل",
+  invoices: "الفواتير",
+  purchases: "المشتريات",
+  expenses: "المصروفات",
+  liquids: "السوائل",
+  vehicles: "المركبات",
+  parts: "القطع",
+  customers: "العملاء",
+  suppliers: "الموردين",
+};
+
 export default function DataManagementPanel({ onChange, addToast }: Props) {
+  const qc = useQueryClient();
   const [seeding, setSeeding] = useState(false);
   const [wiping, setWiping] = useState(false);
   const [progress, setProgress] = useState(0);
   const [wipeText, setWipeText] = useState("");
+  const [wipeResult, setWipeResult] = useState<WipeResponse | null>(null);
 
   async function handleSeed() {
     if (seeding) return;
@@ -59,52 +79,45 @@ export default function DataManagementPanel({ onChange, addToast }: Props) {
     }
   }
 
-  async function deleteAllFromTable(resource: string, idKey: "id" | "code" = "id") {
-    try {
-      const rows = await apiGet<any[]>(`/api/${resource}`, { limit: 1000 });
-      for (const row of rows || []) {
-        const key = row[idKey];
-        if (!key) continue;
-        try {
-          await apiDelete(`/api/${resource}/${encodeURIComponent(key)}`);
-        } catch {
-          // continue; some tables don't expose DELETE for every row (e.g., accounts) — swallow.
-        }
-      }
-    } catch (e: any) {
-      console.warn(`wipe ${resource} failed:`, e);
-    }
-  }
-
   async function handleWipe() {
     if (wipeText !== "احذف") {
-      addToast("يجب كتابة ‏احذف‏ للتأكيد", "error");
+      addToast("يجب كتابة \u200fاحذف\u200f للتأكيد", "error");
       return;
     }
     setWiping(true);
-    setProgress(5);
+    setProgress(10);
+    setWipeResult(null);
     try {
-      // Delete in dependency order (children first)
-      const resources: [string, "id" | "code"][] = [
-        ["liquid-transactions", "id"],
-        ["invoices", "id"],
-        ["purchases", "id"],
-        ["expenses", "id"],
-        ["parts", "id"],
-        ["liquids", "id"],
-        ["vehicles", "id"],
-        ["customers", "id"],
-        ["suppliers", "id"],
-      ];
-      let i = 0;
-      for (const [r, k] of resources) {
-        await deleteAllFromTable(r, k);
-        i++;
-        setProgress(Math.round((i / resources.length) * 100));
+      // 1) Single backend call wipes every business table atomically.
+      const res = await apiPost<WipeResponse>("/api/admin/wipe-all", {});
+      setProgress(60);
+      setWipeResult(res);
+
+      // 2) Clear local caches BEFORE the reload — otherwise the debounced
+      //    auto-sync in App.tsx will re-upload the stale localStorage blob
+      //    on next boot and resurrect the data we just deleted.
+      try { localStorage.removeItem("partspro"); } catch {}
+      try { localStorage.removeItem("partspro_rq_cache_v1"); } catch {}
+      try { qc.clear(); } catch {}
+      setProgress(85);
+
+      // 3) Tally + toast
+      let totalDeleted = 0;
+      const errors: string[] = [];
+      for (const [t, v] of Object.entries(res.deleted || {})) {
+        if (typeof v === "number") totalDeleted += v;
+        else errors.push(`${WIPE_TABLES_LABEL[t] || t}: ${v}`);
       }
-      addToast("تم مسح كل البيانات", "success");
+      if (errors.length) {
+        addToast(`تم مسح ${totalDeleted} صف — مع ${errors.length} خطأ`, "error");
+        console.warn("Wipe errors:", errors);
+      } else {
+        addToast(`تم مسح ${totalDeleted} صف من كل الجداول`, "success");
+      }
+      setProgress(100);
       setWipeText("");
-      onChange?.();
+      // 4) Give the user a beat to read the result, then reload
+      setTimeout(() => onChange?.(), 1200);
     } catch (e: any) {
       addToast(`فشل المسح: ${e.message}`, "error");
     } finally {
@@ -147,7 +160,7 @@ export default function DataManagementPanel({ onChange, addToast }: Props) {
           </div>
           <p className="text-[11px] text-slate-400 mb-2">
             لحذف كل القطع، العملاء، الموردين، الفواتير، وباقي الجداول،
-            اكتب ‏‎<strong>احذف</strong>‏ في الحقل ثم اضغط الزر:
+            اكتب <strong>احذف</strong> في الحقل ثم اضغط الزر:
           </p>
           <div className="flex items-center gap-2 flex-wrap">
             <input
@@ -173,6 +186,28 @@ export default function DataManagementPanel({ onChange, addToast }: Props) {
               className="h-full bg-gradient-to-r from-amber-400 to-emerald-400 transition-all duration-300"
               style={{ width: `${progress}%` }}
             />
+          </div>
+        )}
+
+        {wipeResult && (
+          <div className="mt-3 rounded-xl border border-white/10 p-3 bg-slate-800/40">
+            <div className="text-[11px] text-slate-400 mb-2">نتيجة المسح:</div>
+            <ul className="space-y-1 text-xs">
+              {Object.entries(wipeResult.deleted).map(([t, v]) => (
+                <li key={t} className="flex items-center justify-between">
+                  <span className="text-slate-300">{WIPE_TABLES_LABEL[t] || t}</span>
+                  {typeof v === "number" ? (
+                    <span className="flex items-center gap-1 text-emerald-300">
+                      <CheckCircle className="w-3 h-3" /> {v} صف
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-rose-300">
+                      <XCircle className="w-3 h-3" /> {String(v)}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>

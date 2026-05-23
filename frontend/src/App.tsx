@@ -191,6 +191,31 @@ function Select({ label, value, onChange, options, className = "", required = fa
   );
 }
 
+/** Combobox — datalist-backed input that lets the user pick a preset OR type a free-text value.
+ *  Used for brand/category/etc. where the seed list is incomplete and the user may have their own values. */
+function Combobox({ label, value, onChange, options, placeholder = "", className = "", required = false }: {
+  label?: string; value: string; onChange: (v: string) => void;
+  options: { value: string; label: string }[]; placeholder?: string; className?: string; required?: boolean;
+}) {
+  const listId = `dl-${label || "combo"}-${Math.random().toString(36).slice(2, 7)}`;
+  return (
+    <div className={`flex flex-col gap-1 ${className}`}>
+      {label && <label className="text-xs font-semibold text-slate-400">{label}{required && <span className="text-rose-400 mr-1">*</span>}</label>}
+      <input
+        list={listId}
+        value={value}
+        required={required}
+        placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)}
+        className="px-3.5 py-2.5 rounded-xl liquid-input text-sm text-slate-100 focus:outline-none transition-all"
+      />
+      <datalist id={listId}>
+        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </datalist>
+    </div>
+  );
+}
+
 /** Toggle — Liquid Design */
 function Toggle({ label, checked, onChange, className = "" }: {
   label?: string; checked: boolean; onChange: (v: boolean) => void; className?: string;
@@ -336,8 +361,8 @@ function PartForm({ part, onSave, onCancel }: {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Input label="الاسم بالعربي" value={form.name_ar} onChange={(v) => update("name_ar", v)} required placeholder="مثال: بستم مكينة" />
         <Input label="رقم OEM" value={form.oem} onChange={(v) => update("oem", v)} required placeholder="مثال: 13101-17100" />
-        <Select label="الماركة" value={form.brand} onChange={(v) => update("brand", v)} options={brands.map((b) => ({ value: b, label: b }))} />
-        <Select label="الفئة" value={form.category} onChange={(v) => update("category", v)} options={categories.map((c) => ({ value: c, label: c }))} />
+        <Combobox label="الماركة" value={form.brand} onChange={(v) => update("brand", v)} options={brands.map((b) => ({ value: b, label: b }))} placeholder="مثال: Toyota أو بوش" />
+        <Combobox label="الفئة" value={form.category} onChange={(v) => update("category", v)} options={categories.map((c) => ({ value: c, label: c }))} placeholder="مثال: محرك أو فلاتر" />
         <Input label="الموديل / المركبة" value={form.model} onChange={(v) => update("model", v)} placeholder="مثال: Hilux 2006" />
         <Input label="الموقع في المستودع" value={form.location} onChange={(v) => update("location", v)} placeholder="مثال: A01-ممر1" />
         <Input label="الكمية" value={form.stock} onChange={(v) => update("stock", Number(v))} type="number" min={0} />

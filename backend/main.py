@@ -994,6 +994,34 @@ async def analytics_summary(supabase: Client = Depends(get_supabase)):
     }
 
 # ════════════════════════════════════════════════════════════════════
+# ADMIN
+# ════════════════════════════════════════════════════════════════════
+
+WIPE_TABLES = [
+    "liquid_transactions", "invoices", "purchases", "expenses",
+    "liquids", "vehicles", "parts", "customers", "suppliers",
+]
+
+@app.post("/api/admin/wipe-all", tags=["Admin"])
+async def wipe_all(supabase: Client = Depends(get_supabase)):
+    """
+    Hard-delete every row from every business table.
+    Uses `.neq('id', '__never_match_xyz__')` so PostgREST returns the deleted rows
+    (otherwise it returns nothing because RLS hides the response payload).
+    Accounts table is intentionally skipped — its 28 chart-of-accounts rows are
+    seeded by the migration and would be lost permanently.
+    """
+    counts: Dict[str, Any] = {}
+    for t in WIPE_TABLES:
+        try:
+            res = supabase.table(t).delete().neq("id", "__never_match_xyz__").execute()
+            counts[t] = len(res.data) if getattr(res, "data", None) else 0
+        except Exception as e:  # noqa: BLE001
+            counts[t] = f"error: {str(e)[:120]}"
+    return {"success": True, "deleted": counts}
+
+
+# ════════════════════════════════════════════════════════════════════
 # HEALTH
 # ════════════════════════════════════════════════════════════════════
 
