@@ -30,6 +30,9 @@ logger = logging.getLogger("partspro.backend")
 
 # ── Routers ──
 from routers.finance import router as finance_router
+from routers.ai import router as ai_router
+from routers.auth import router as auth_router
+from routers.journal import router as journal_router, build_purchase_journal, build_expense_journal
 
 # ── Supabase client (async) ──
 from supabase import create_client, Client
@@ -100,6 +103,9 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 # ── Include Routers ──
 app.include_router(finance_router)
+app.include_router(ai_router)
+app.include_router(auth_router)
+app.include_router(journal_router)
 
 # ════════════════════════════════════════════════════════════════════
 # MODELS
@@ -578,6 +584,12 @@ async def get_purchase(purchase_id: str, supabase: Client = Depends(get_supabase
 @app.post("/api/purchases", tags=["Purchases"], status_code=201)
 async def create_purchase(purchase: PurchaseModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("purchases").upsert(purchase.dict(), on_conflict="id").execute()
+    # Double-entry: Dr Inventory + VAT, Cr Suppliers (Phase 4 §C6)
+    try:
+        je = build_purchase_journal(purchase.dict())
+        supabase.table("journal_entries").upsert(je, on_conflict="id").execute()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"purchase journal failed: {e}")
     return {"data": _single_or_404(res.data, "Purchase")}
 
 @app.put("/api/purchases/{purchase_id}", tags=["Purchases"])
@@ -629,6 +641,12 @@ async def get_expense(expense_id: str, supabase: Client = Depends(get_supabase))
 @app.post("/api/expenses", tags=["Expenses"], status_code=201)
 async def create_expense(expense: ExpenseModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("expenses").upsert(expense.dict(), on_conflict="id").execute()
+    # Double-entry: Dr Expense (by category), Cr Cash/Bank (Phase 4 §C6)
+    try:
+        je = build_expense_journal(expense.dict())
+        supabase.table("journal_entries").upsert(je, on_conflict="id").execute()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"expense journal failed: {e}")
     return {"data": _single_or_404(res.data, "Expense")}
 
 @app.put("/api/expenses/{expense_id}", tags=["Expenses"])

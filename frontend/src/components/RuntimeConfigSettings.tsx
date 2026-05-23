@@ -100,34 +100,13 @@ export default function RuntimeConfigSettings({ onSaved }: Props) {
           />
         </div>
 
-        {/* Groq */}
-        <div className="md:col-span-2 flex items-center gap-2 text-amber-300/80 text-xs font-bold pt-3">
-          <Brain className="w-4 h-4" /> Groq (J.A.R.V.I.S — LLaMA)
-        </div>
-        <div className="md:col-span-2">
-          <label className="block text-[11px] text-slate-400 mb-1">Groq API Key</label>
-          <input
-            className={inputBase}
-            type={showSecrets ? "text" : "password"}
-            placeholder="gsk_..."
-            value={draft.groqApiKey}
-            onChange={(e) => update("groqApiKey", e.target.value.trim())}
-          />
-        </div>
-
-        {/* Google */}
-        <div className="md:col-span-2 flex items-center gap-2 text-sky-300/80 text-xs font-bold pt-3">
-          <Search className="w-4 h-4" /> Google AI (Gemini + Search)
-        </div>
-        <div className="md:col-span-2">
-          <label className="block text-[11px] text-slate-400 mb-1">Google API Key</label>
-          <input
-            className={inputBase}
-            type={showSecrets ? "text" : "password"}
-            placeholder="AIza..."
-            value={draft.googleApiKey}
-            onChange={(e) => update("googleApiKey", e.target.value.trim())}
-          />
+        {/* Groq + Google sections removed in Phase 4 §C1 — these API keys
+            are now stored only in /app/backend/.env and never reach the
+            browser bundle. To rotate them, edit the backend .env and
+            restart the backend service. */}
+        <div className="md:col-span-2 rounded-xl border border-emerald-400/20 bg-emerald-500/5 p-3 text-[11px] text-emerald-200">
+          🔒 مفاتيح Groq و Google AI مُدارة من جانب الخادم الآن — لم تعد مُضمَّنة في ملف المتصفح.
+          لتدويرها، عدّل <code>/app/backend/.env</code> وأعد تشغيل الخادم.
         </div>
 
         {/* Firebase removed (Phase 3) — Firestore sync was disabled and the

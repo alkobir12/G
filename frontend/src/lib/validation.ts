@@ -184,10 +184,8 @@ export const PartSchema = z
       2,
       "اسم القطعة يجب أن يكون حرفين على الأقل"
     ),
-    brand: requiredString("العلامة التجارية مطلوبة"),
-    category: z.enum(PART_CATEGORIES, {
-      message: "التصنيف يجب أن يكون واحداً من التصنيفات المعتمدة",
-    }),
+    brand: requiredString("العلامة التجارية مطلوبة").max(50, "العلامة التجارية يجب أن تكون 50 حرفاً أو أقل"),
+    category: requiredString("التصنيف مطلوب").max(50, "التصنيف يجب أن يكون 50 حرفاً أو أقل"),
     model: z.string().default(""),
     stock: z
       .number({ message: "الكمية يجب أن تكون رقماً" })
