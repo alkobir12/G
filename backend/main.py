@@ -1,10 +1,21 @@
-# Parts Pro — Full FastAPI Backend
-# Run: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# Parts Pro — FastAPI Backend
+# ════════════════════════════════════════════════════════════════════
+#  Response envelope convention:
+#    - Lists  : {"data": [...]}
+#    - Single : {"data": {...}}
+#    - Mutation success-only : {"success": true} or {"success": true, "id": "..."}
+#    - Errors : {"error": {"code": "...", "message": "...", "detail": "..."}}
+#  HTTP codes:
+#    - 200 ok, 201 created (created via POST endpoints), 204 no content
+#    - 400 validation / postgrest 4xx, 404 not found (PGRST205/116), 503 Supabase not configured,
+#      500 unexpected
+# ════════════════════════════════════════════════════════════════════
 
-from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi import FastAPI, HTTPException, Depends, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 import os
 import logging
@@ -22,6 +33,7 @@ from routers.finance import router as finance_router
 
 # ── Supabase client (async) ──
 from supabase import create_client, Client
+from postgrest.exceptions import APIError as PostgrestAPIError
 
 # Read from env ONLY. NEVER fall back to anyone else's Supabase project.
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
@@ -37,7 +49,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 app = FastAPI(
     title="Parts Pro API",
     description="Backend API for Parts Pro Auto Parts Management System",
-    version="2.0.0",
+    version="2.1.0",
     openapi_url="/api/openapi.json",
     docs_url="/api/docs",
     redoc_url="/api/redoc",
@@ -63,12 +75,35 @@ async def get_supabase() -> Client:
         )
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
+# ── Global exception handler for PostgREST errors ──
+@app.exception_handler(PostgrestAPIError)
+async def postgrest_error_handler(request: Request, exc: PostgrestAPIError):
+    msg = exc.message if hasattr(exc, "message") else str(exc)
+    code = getattr(exc, "code", "") or ""
+    details = getattr(exc, "details", None)
+    # PGRST116 = no rows returned for .single(); PGRST205 = relation not found
+    status = 404 if code in ("PGRST116", "PGRST205") else 400
+    logger.warning(f"PostgREST error: code={code} message={msg}")
+    return JSONResponse(
+        status_code=status,
+        content={"error": {"code": code, "message": msg, "detail": details}},
+    )
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    # Only catches anything not already handled (HTTPException etc. bypass this).
+    logger.exception(f"Unhandled error on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": {"code": "INTERNAL", "message": "Internal server error", "detail": str(exc)}},
+    )
+
 # ── Include Routers ──
 app.include_router(finance_router)
 
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 # MODELS
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 
 class PartModel(BaseModel):
     id: str
@@ -85,7 +120,8 @@ class PartModel(BaseModel):
     wholesale: float = 0
 
 class InvoiceItem(BaseModel):
-    part_id: str
+    # part_id is optional — frontend allows free-text items not in the parts table.
+    part_id: Optional[str] = None
     name: str
     qty: int
     price: float
@@ -126,7 +162,8 @@ class SupplierModel(BaseModel):
     status: str = "نشط"
 
 class PurchaseItem(BaseModel):
-    part_id: str
+    # part_id is optional — same rationale as InvoiceItem.
+    part_id: Optional[str] = None
     name: str
     qty: int
     cost: float
@@ -158,13 +195,18 @@ class AccountModel(BaseModel):
     balance: float = 0
     parent: str = ""
 
-class JournalEntryModel(BaseModel):
-    id: str
-    date: str
-    description: str
-    entries: List[dict]
-    ref_id: str = ""
-    ref_type: str = ""
+class SettingsModel(BaseModel):
+    id: str = "main"
+    company_name: str = "Parts Pro"
+    address: str = ""
+    phone: str = ""
+    email: str = ""
+    vat_number: str = ""
+    cr_number: str = ""
+    currency: str = "ر.س"
+    vat_enabled: bool = True
+    vat_rate: float = 0.15
+    invoice_footer: str = "شكراً لتعاملكم معنا"
 
 class LiquidTypeModel(BaseModel):
     id: str
@@ -195,11 +237,11 @@ class VehicleModel(BaseModel):
 class LiquidTransactionModel(BaseModel):
     id: str
     date: str
-    vehicle_id: str
-    vehicle_plate: str
-    liquid_id: str
-    liquid_name: str
-    category: str
+    vehicle_id: str = ""
+    vehicle_plate: str = ""
+    liquid_id: str = ""
+    liquid_name: str = ""
+    category: str = ""
     qty: int = 1
     price: float = 0
     total: float = 0
@@ -237,66 +279,165 @@ class InfobipWhatsAppRequest(BaseModel):
     to: str
     message: str
 
-# ═══════════════════════════════════════════════
-# PARTS API
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# Shared helpers
+# ════════════════════════════════════════════════════════════════════
+
+MAX_LIMIT = 1000
+
+def _validate_limit(limit: int) -> int:
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if limit > MAX_LIMIT:
+        raise HTTPException(status_code=400, detail=f"limit must be <= {MAX_LIMIT}")
+    return limit
+
+def _apply_range(q, limit: int, offset: int):
+    """Supabase .range(from, to) is inclusive on both ends."""
+    return q.range(offset, offset + limit - 1)
+
+def _strip_id(body: Dict[str, Any], key: str = "id") -> Dict[str, Any]:
+    """Path is the source of truth for the row identifier — drop the key from the body if present."""
+    if not isinstance(body, dict):
+        return body
+    body = dict(body)
+    body.pop(key, None)
+    if not body:
+        raise HTTPException(status_code=400, detail="Update body is empty")
+    return body
+
+def _single_or_404(rows, label: str):
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    return rows[0] if isinstance(rows, list) else rows
+
+def _update_response(rows, label: str):
+    """Return updated row(s) or 404. Used by every PUT endpoint."""
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"{label} not found")
+    return {"data": rows[0] if isinstance(rows, list) else rows}
+
+# ════════════════════════════════════════════════════════════════════
+# PARTS
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/parts", tags=["Parts"])
-async def list_parts(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("parts").select("*").execute()
+async def list_parts(
+    supabase: Client = Depends(get_supabase),
+    search: Optional[str] = Query(None, description="Match name_ar or oem (ilike)"),
+    category: Optional[str] = None,
+    low_stock: bool = False,
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("parts").select("*")
+    if search:
+        q = q.or_(f"name_ar.ilike.%{search}%,oem.ilike.%{search}%,id.ilike.%{search}%")
+    if category:
+        q = q.eq("category", category)
+    if low_stock:
+        # PostgREST doesn't support col<col comparison directly via REST; fetch then filter in Python.
+        # Cheap enough for typical inventory sizes; if it becomes slow we can move to an RPC.
+        res = _apply_range(q, limit, offset).execute()
+        data = [r for r in (res.data or []) if (r.get("stock") or 0) <= (r.get("min_stock") or 0)]
+        return {"data": data}
+    res = _apply_range(q, limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/parts", tags=["Parts"])
+@app.get("/api/parts/{part_id}", tags=["Parts"])
+async def get_part(part_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("parts").select("*").eq("id", part_id).execute()
+    return {"data": _single_or_404(res.data, "Part")}
+
+@app.post("/api/parts", tags=["Parts"], status_code=201)
 async def create_part(part: PartModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("parts").upsert(part.dict(), on_conflict="id").execute()
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Part")}
 
 @app.put("/api/parts/{part_id}", tags=["Parts"])
-async def update_part(part_id: str, part: PartModel, supabase: Client = Depends(get_supabase)):
-    res = supabase.table("parts").update(part.dict()).eq("id", part_id).execute()
-    return {"data": res.data}
+async def update_part(
+    part_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("parts").update(body).eq("id", part_id).execute()
+    return _update_response(res.data, "Part")
 
 @app.delete("/api/parts/{part_id}", tags=["Parts"])
 async def delete_part(part_id: str, supabase: Client = Depends(get_supabase)):
     res = supabase.table("parts").delete().eq("id", part_id).execute()
-    return {"success": True}
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Part not found")
+    return {"success": True, "id": part_id}
 
-# ═══════════════════════════════════════════════
-# INVOICES API
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# INVOICES
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/invoices", tags=["Invoices"])
-async def list_invoices(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("invoices").select("*").execute()
+async def list_invoices(
+    supabase: Client = Depends(get_supabase),
+    customer: Optional[str] = Query(None, description="Match customer name (ilike)"),
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("invoices").select("*")
+    if customer:
+        q = q.ilike("customer", f"%{customer}%")
+    if date_from:
+        q = q.gte("date", date_from)
+    if date_to:
+        q = q.lte("date", date_to)
+    res = _apply_range(q.order("created_at", desc=True), limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/invoices", tags=["Invoices"])
+@app.get("/api/invoices/{invoice_id}", tags=["Invoices"])
+async def get_invoice(invoice_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("invoices").select("*").eq("id", invoice_id).execute()
+    return {"data": _single_or_404(res.data, "Invoice")}
+
+@app.post("/api/invoices", tags=["Invoices"], status_code=201)
 async def create_invoice(invoice: InvoiceModel, supabase: Client = Depends(get_supabase)):
-    # Insert invoice
     res = supabase.table("invoices").upsert(invoice.dict(), on_conflict="id").execute()
-    # Update stock
+    # Update stock for items that reference a real part_id
     for item in invoice.items:
+        if not item.part_id:
+            continue
         current = supabase.table("parts").select("stock").eq("id", item.part_id).execute()
         if current.data:
             new_stock = max(0, current.data[0]["stock"] - item.qty)
             supabase.table("parts").update({"stock": new_stock}).eq("id", item.part_id).execute()
     # Double-entry: Debit Cash/Bank, Credit Sales + VAT
     create_journal_from_invoice(supabase, invoice)
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Invoice")}
+
+@app.put("/api/invoices/{invoice_id}", tags=["Invoices"])
+async def update_invoice(
+    invoice_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("invoices").update(body).eq("id", invoice_id).execute()
+    return _update_response(res.data, "Invoice")
 
 @app.delete("/api/invoices/{invoice_id}", tags=["Invoices"])
 async def delete_invoice(invoice_id: str, supabase: Client = Depends(get_supabase)):
     res = supabase.table("invoices").delete().eq("id", invoice_id).execute()
-    return {"success": True}
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    return {"success": True, "id": invoice_id}
 
 def create_journal_from_invoice(supabase, invoice: InvoiceModel):
     entries = []
-    # Debit: Cash (1110) or Bank (1120)
     account_code = "1110" if invoice.payment in ["نقدي", "مدى", "Apple Pay"] else "1120"
     entries.append({"account_code": account_code, "debit": invoice.total, "credit": 0})
-    # Credit: Sales (4100)
     entries.append({"account_code": "4100", "debit": 0, "credit": invoice.subtotal})
-    # Credit: VAT Output (2110) if applicable
     if invoice.vat > 0:
         entries.append({"account_code": "2110", "debit": 0, "credit": invoice.vat})
     journal = {
@@ -305,84 +446,223 @@ def create_journal_from_invoice(supabase, invoice: InvoiceModel):
         "description": f"فاتورة مبيعات {invoice.id}",
         "entries": entries,
         "ref_id": invoice.id,
-        "ref_type": "invoice"
+        "ref_type": "invoice",
     }
     supabase.table("journal_entries").upsert(journal, on_conflict="id").execute()
 
-# ═══════════════════════════════════════════════
-# CUSTOMERS API
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# CUSTOMERS
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/customers", tags=["Customers"])
-async def list_customers(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("customers").select("*").execute()
+async def list_customers(
+    supabase: Client = Depends(get_supabase),
+    search: Optional[str] = Query(None, description="Match name or phone (ilike)"),
+    type: Optional[str] = Query(None, description="نقدي / آجل"),
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("customers").select("*")
+    if search:
+        q = q.or_(f"name.ilike.%{search}%,phone.ilike.%{search}%,email.ilike.%{search}%")
+    if type:
+        q = q.eq("type", type)
+    res = _apply_range(q, limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/customers", tags=["Customers"])
+@app.get("/api/customers/{customer_id}", tags=["Customers"])
+async def get_customer(customer_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("customers").select("*").eq("id", customer_id).execute()
+    return {"data": _single_or_404(res.data, "Customer")}
+
+@app.post("/api/customers", tags=["Customers"], status_code=201)
 async def create_customer(customer: CustomerModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("customers").upsert(customer.dict(), on_conflict="id").execute()
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Customer")}
 
-# ═══════════════════════════════════════════════
-# SUPPLIERS API
-# ═══════════════════════════════════════════════
+@app.put("/api/customers/{customer_id}", tags=["Customers"])
+async def update_customer(
+    customer_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("customers").update(body).eq("id", customer_id).execute()
+    return _update_response(res.data, "Customer")
+
+@app.delete("/api/customers/{customer_id}", tags=["Customers"])
+async def delete_customer(customer_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("customers").delete().eq("id", customer_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    return {"success": True, "id": customer_id}
+
+# ════════════════════════════════════════════════════════════════════
+# SUPPLIERS
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/suppliers", tags=["Suppliers"])
-async def list_suppliers(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("suppliers").select("*").execute()
+async def list_suppliers(
+    supabase: Client = Depends(get_supabase),
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("suppliers").select("*")
+    if search:
+        q = q.or_(f"name.ilike.%{search}%,phone.ilike.%{search}%,contact.ilike.%{search}%")
+    if status:
+        q = q.eq("status", status)
+    res = _apply_range(q, limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/suppliers", tags=["Suppliers"])
+@app.get("/api/suppliers/{supplier_id}", tags=["Suppliers"])
+async def get_supplier(supplier_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("suppliers").select("*").eq("id", supplier_id).execute()
+    return {"data": _single_or_404(res.data, "Supplier")}
+
+@app.post("/api/suppliers", tags=["Suppliers"], status_code=201)
 async def create_supplier(supplier: SupplierModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("suppliers").upsert(supplier.dict(), on_conflict="id").execute()
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Supplier")}
 
-# ═══════════════════════════════════════════════
-# PURCHASES API
-# ═══════════════════════════════════════════════
+@app.put("/api/suppliers/{supplier_id}", tags=["Suppliers"])
+async def update_supplier(
+    supplier_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("suppliers").update(body).eq("id", supplier_id).execute()
+    return _update_response(res.data, "Supplier")
+
+@app.delete("/api/suppliers/{supplier_id}", tags=["Suppliers"])
+async def delete_supplier(supplier_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("suppliers").delete().eq("id", supplier_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    return {"success": True, "id": supplier_id}
+
+# ════════════════════════════════════════════════════════════════════
+# PURCHASES
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/purchases", tags=["Purchases"])
-async def list_purchases(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("purchases").select("*").execute()
+async def list_purchases(
+    supabase: Client = Depends(get_supabase),
+    supplier: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("purchases").select("*")
+    if supplier:
+        q = q.ilike("supplier", f"%{supplier}%")
+    if date_from:
+        q = q.gte("date", date_from)
+    if date_to:
+        q = q.lte("date", date_to)
+    res = _apply_range(q.order("created_at", desc=True), limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/purchases", tags=["Purchases"])
+@app.get("/api/purchases/{purchase_id}", tags=["Purchases"])
+async def get_purchase(purchase_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("purchases").select("*").eq("id", purchase_id).execute()
+    return {"data": _single_or_404(res.data, "Purchase")}
+
+@app.post("/api/purchases", tags=["Purchases"], status_code=201)
 async def create_purchase(purchase: PurchaseModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("purchases").upsert(purchase.dict(), on_conflict="id").execute()
-    # Double-entry: Debit Purchases/Payable, Credit Cash/Bank
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Purchase")}
 
-# ═══════════════════════════════════════════════
-# EXPENSES API
-# ═══════════════════════════════════════════════
+@app.put("/api/purchases/{purchase_id}", tags=["Purchases"])
+async def update_purchase(
+    purchase_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("purchases").update(body).eq("id", purchase_id).execute()
+    return _update_response(res.data, "Purchase")
+
+@app.delete("/api/purchases/{purchase_id}", tags=["Purchases"])
+async def delete_purchase(purchase_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("purchases").delete().eq("id", purchase_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Purchase not found")
+    return {"success": True, "id": purchase_id}
+
+# ════════════════════════════════════════════════════════════════════
+# EXPENSES
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/expenses", tags=["Expenses"])
-async def list_expenses(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("expenses").select("*").execute()
+async def list_expenses(
+    supabase: Client = Depends(get_supabase),
+    category: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("expenses").select("*")
+    if category:
+        q = q.eq("category", category)
+    if date_from:
+        q = q.gte("date", date_from)
+    if date_to:
+        q = q.lte("date", date_to)
+    res = _apply_range(q.order("created_at", desc=True), limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/expenses", tags=["Expenses"])
+@app.get("/api/expenses/{expense_id}", tags=["Expenses"])
+async def get_expense(expense_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("expenses").select("*").eq("id", expense_id).execute()
+    return {"data": _single_or_404(res.data, "Expense")}
+
+@app.post("/api/expenses", tags=["Expenses"], status_code=201)
 async def create_expense(expense: ExpenseModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("expenses").upsert(expense.dict(), on_conflict="id").execute()
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Expense")}
 
-# ═══════════════════════════════════════════════
-# ACCOUNTS API
-# ═══════════════════════════════════════════════
+@app.put("/api/expenses/{expense_id}", tags=["Expenses"])
+async def update_expense(
+    expense_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("expenses").update(body).eq("id", expense_id).execute()
+    return _update_response(res.data, "Expense")
+
+@app.delete("/api/expenses/{expense_id}", tags=["Expenses"])
+async def delete_expense(expense_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("expenses").delete().eq("id", expense_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Expense not found")
+    return {"success": True, "id": expense_id}
+
+# ════════════════════════════════════════════════════════════════════
+# ACCOUNTS (chart of accounts)
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/accounts", tags=["Accounts"])
 async def list_accounts(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("accounts").select("*").execute()
+    res = supabase.table("accounts").select("*").order("code").execute()
     return {"data": res.data}
 
 @app.get("/api/accounts/{code}/ledger", tags=["Accounts"])
 async def account_ledger(code: str, supabase: Client = Depends(get_supabase)):
-    # Get account info
     account = supabase.table("accounts").select("*").eq("code", code).execute()
-    # Get journal entries
     journals = supabase.table("journal_entries").select("*").execute()
     entries = []
-    for j in journals.data:
+    for j in journals.data or []:
         for e in j.get("entries", []):
             if e.get("account_code") == code:
                 entries.append({
@@ -392,58 +672,206 @@ async def account_ledger(code: str, supabase: Client = Depends(get_supabase)):
                     "credit": e.get("credit", 0),
                     "ref_id": j.get("ref_id"),
                 })
-    return {"account": account.data[0] if account.data else None, "entries": entries}
+    return {"account": (account.data[0] if account.data else None), "entries": entries}
 
-# ═══════════════════════════════════════════════
-# LIQUID SYSTEM API
-# ═══════════════════════════════════════════════
+@app.post("/api/accounts", tags=["Accounts"], status_code=201)
+async def create_account(account: AccountModel, supabase: Client = Depends(get_supabase)):
+    # Idempotent upsert keyed on `code` (the primary key of the accounts table).
+    res = supabase.table("accounts").upsert(account.dict(), on_conflict="code").execute()
+    return {"data": _single_or_404(res.data, "Account")}
+
+@app.put("/api/accounts/{code}", tags=["Accounts"])
+async def update_account(
+    code: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body, key="code")
+    res = supabase.table("accounts").update(body).eq("code", code).execute()
+    return _update_response(res.data, "Account")
+
+# ════════════════════════════════════════════════════════════════════
+# SETTINGS
+# ════════════════════════════════════════════════════════════════════
+
+@app.get("/api/settings", tags=["Settings"])
+async def list_settings(supabase: Client = Depends(get_supabase)):
+    res = supabase.table("settings").select("*").execute()
+    return {"data": res.data}
+
+@app.get("/api/settings/{settings_id}", tags=["Settings"])
+async def get_settings(settings_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("settings").select("*").eq("id", settings_id).execute()
+    return {"data": _single_or_404(res.data, "Settings")}
+
+@app.post("/api/settings", tags=["Settings"], status_code=201)
+async def create_settings(settings: SettingsModel, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("settings").upsert(settings.dict(), on_conflict="id").execute()
+    return {"data": _single_or_404(res.data, "Settings")}
+
+@app.put("/api/settings/{settings_id}", tags=["Settings"])
+async def update_settings(
+    settings_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    # Upsert so that a brand-new settings row can be created via PUT
+    # (the frontend always knows the id 'main').
+    body["id"] = settings_id
+    res = supabase.table("settings").upsert(body, on_conflict="id").execute()
+    return _update_response(res.data, "Settings")
+
+# ════════════════════════════════════════════════════════════════════
+# LIQUIDS
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/liquids", tags=["Liquids"])
-async def list_liquids(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("liquids").select("*").execute()
+async def list_liquids(
+    supabase: Client = Depends(get_supabase),
+    category: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("liquids").select("*")
+    if category:
+        q = q.eq("category", category)
+    if search:
+        q = q.or_(f"name.ilike.%{search}%,brand.ilike.%{search}%")
+    res = _apply_range(q, limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/liquids", tags=["Liquids"])
+@app.get("/api/liquids/{liquid_id}", tags=["Liquids"])
+async def get_liquid(liquid_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("liquids").select("*").eq("id", liquid_id).execute()
+    return {"data": _single_or_404(res.data, "Liquid")}
+
+@app.post("/api/liquids", tags=["Liquids"], status_code=201)
 async def create_liquid(liquid: LiquidTypeModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("liquids").upsert(liquid.dict(), on_conflict="id").execute()
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Liquid")}
+
+@app.put("/api/liquids/{liquid_id}", tags=["Liquids"])
+async def update_liquid(
+    liquid_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("liquids").update(body).eq("id", liquid_id).execute()
+    return _update_response(res.data, "Liquid")
+
+@app.delete("/api/liquids/{liquid_id}", tags=["Liquids"])
+async def delete_liquid(liquid_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("liquids").delete().eq("id", liquid_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Liquid not found")
+    return {"success": True, "id": liquid_id}
+
+# ════════════════════════════════════════════════════════════════════
+# VEHICLES
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/vehicles", tags=["Vehicles"])
-async def list_vehicles(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("vehicles").select("*").execute()
+async def list_vehicles(
+    supabase: Client = Depends(get_supabase),
+    search: Optional[str] = Query(None, description="Match plate / owner (ilike)"),
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("vehicles").select("*")
+    if search:
+        q = q.or_(f"plate.ilike.%{search}%,owner.ilike.%{search}%,phone.ilike.%{search}%")
+    res = _apply_range(q, limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/vehicles", tags=["Vehicles"])
+@app.get("/api/vehicles/{vehicle_id}", tags=["Vehicles"])
+async def get_vehicle(vehicle_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("vehicles").select("*").eq("id", vehicle_id).execute()
+    return {"data": _single_or_404(res.data, "Vehicle")}
+
+@app.post("/api/vehicles", tags=["Vehicles"], status_code=201)
 async def create_vehicle(vehicle: VehicleModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("vehicles").upsert(vehicle.dict(), on_conflict="id").execute()
-    return {"data": res.data}
+    return {"data": _single_or_404(res.data, "Vehicle")}
+
+@app.put("/api/vehicles/{vehicle_id}", tags=["Vehicles"])
+async def update_vehicle(
+    vehicle_id: str,
+    body: Dict[str, Any],
+    supabase: Client = Depends(get_supabase),
+):
+    body = _strip_id(body)
+    res = supabase.table("vehicles").update(body).eq("id", vehicle_id).execute()
+    return _update_response(res.data, "Vehicle")
+
+@app.delete("/api/vehicles/{vehicle_id}", tags=["Vehicles"])
+async def delete_vehicle(vehicle_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("vehicles").delete().eq("id", vehicle_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+    return {"success": True, "id": vehicle_id}
+
+# ════════════════════════════════════════════════════════════════════
+# LIQUID TRANSACTIONS
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/liquid-transactions", tags=["Liquid Transactions"])
-async def list_liquid_txns(supabase: Client = Depends(get_supabase)):
-    res = supabase.table("liquid_transactions").select("*").execute()
+async def list_liquid_txns(
+    supabase: Client = Depends(get_supabase),
+    vehicle_id: Optional[str] = None,
+    liquid_id: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = Query(200, ge=1, le=MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    _validate_limit(limit)
+    q = supabase.table("liquid_transactions").select("*")
+    if vehicle_id:
+        q = q.eq("vehicle_id", vehicle_id)
+    if liquid_id:
+        q = q.eq("liquid_id", liquid_id)
+    if date_from:
+        q = q.gte("date", date_from)
+    if date_to:
+        q = q.lte("date", date_to)
+    res = _apply_range(q.order("created_at", desc=True), limit, offset).execute()
     return {"data": res.data}
 
-@app.post("/api/liquid-transactions", tags=["Liquid Transactions"])
+@app.post("/api/liquid-transactions", tags=["Liquid Transactions"], status_code=201)
 async def create_liquid_txn(txn: LiquidTransactionModel, supabase: Client = Depends(get_supabase)):
     res = supabase.table("liquid_transactions").upsert(txn.dict(), on_conflict="id").execute()
     # Update liquid stock
-    current = supabase.table("liquids").select("stock").eq("id", txn.liquid_id).execute()
-    if current.data:
-        new_stock = max(0, current.data[0]["stock"] - txn.qty)
-        supabase.table("liquids").update({"stock": new_stock}).eq("id", txn.liquid_id).execute()
-    # Update vehicle
-    supabase.table("vehicles").update({
-        "last_oil_change_km": txn.km_at_service,
-        "last_oil_change_date": txn.date,
-        "oil_type": txn.liquid_id
-    }).eq("id", txn.vehicle_id).execute()
-    return {"data": res.data}
+    if txn.liquid_id:
+        current = supabase.table("liquids").select("stock").eq("id", txn.liquid_id).execute()
+        if current.data:
+            new_stock = max(0, current.data[0]["stock"] - txn.qty)
+            supabase.table("liquids").update({"stock": new_stock}).eq("id", txn.liquid_id).execute()
+    # Update vehicle service history
+    if txn.vehicle_id:
+        supabase.table("vehicles").update({
+            "last_oil_change_km": txn.km_at_service,
+            "last_oil_change_date": txn.date,
+            "oil_type": txn.liquid_id,
+        }).eq("id", txn.vehicle_id).execute()
+    return {"data": _single_or_404(res.data, "Liquid Transaction")}
 
-# ═══════════════════════════════════════════════
-# POS API (Double-Entry Accounting)
-# ═══════════════════════════════════════════════
+@app.delete("/api/liquid-transactions/{tx_id}", tags=["Liquid Transactions"])
+async def delete_liquid_txn(tx_id: str, supabase: Client = Depends(get_supabase)):
+    res = supabase.table("liquid_transactions").delete().eq("id", tx_id).execute()
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Liquid transaction not found")
+    return {"success": True, "id": tx_id}
 
-@app.post("/api/pos/checkout", tags=["POS"])
+# ════════════════════════════════════════════════════════════════════
+# POS
+# ════════════════════════════════════════════════════════════════════
+
+@app.post("/api/pos/checkout", tags=["POS"], status_code=201)
 async def pos_checkout(req: POSRequest, supabase: Client = Depends(get_supabase)):
     invoice_id = f"INV-{datetime.now().strftime('%Y-%m-%d')}-{datetime.now().strftime('%H%M%S')}"
     invoice = {
@@ -456,23 +884,23 @@ async def pos_checkout(req: POSRequest, supabase: Client = Depends(get_supabase)
         "vat": req.vat,
         "total": req.total,
         "payment": req.payment,
-        "status": "مكتمل"
+        "status": "مكتمل",
     }
-    # Save invoice
     supabase.table("invoices").insert(invoice).execute()
-    # Update stock
     for item in req.items:
-        current = supabase.table("parts").select("stock").eq("id", item["part_id"]).execute()
+        pid = item.get("part_id")
+        if not pid:
+            continue
+        current = supabase.table("parts").select("stock").eq("id", pid).execute()
         if current.data:
-            new_stock = max(0, current.data[0]["stock"] - item["qty"])
-            supabase.table("parts").update({"stock": new_stock}).eq("id", item["part_id"]).execute()
-    # Journal Entry
+            new_stock = max(0, current.data[0]["stock"] - item.get("qty", 0))
+            supabase.table("parts").update({"stock": new_stock}).eq("id", pid).execute()
     create_journal_from_invoice(supabase, InvoiceModel(**invoice))
-    return {"invoice_id": invoice_id, "success": True}
+    return {"data": {"invoice_id": invoice_id}, "success": True}
 
-# ═══════════════════════════════════════════════
-# SYNC API
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# SYNC
+# ════════════════════════════════════════════════════════════════════
 
 @app.post("/api/sync", tags=["Sync"])
 async def sync_all(data: SyncRequest, supabase: Client = Depends(get_supabase)):
@@ -484,59 +912,72 @@ async def sync_all(data: SyncRequest, supabase: Client = Depends(get_supabase)):
         ("customers", data.customers),
         ("purchases", data.purchases),
         ("expenses", data.expenses),
-        ("accounts", data.accounts),
         ("liquids", data.liquids),
         ("vehicles", data.vehicles),
         ("liquid_transactions", data.liquid_txns),
     ]
     for table, rows in tables:
         if rows:
-            res = supabase.table(table).upsert(rows, on_conflict="id").execute()
-            if hasattr(res, 'error') and res.error:
-                errors.append(f"{table}: {res.error}")
+            try:
+                supabase.table(table).upsert(rows, on_conflict="id").execute()
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{table}: {e}")
+    # Accounts use `code` PK, not `id`
+    if data.accounts:
+        try:
+            supabase.table("accounts").upsert(data.accounts, on_conflict="code").execute()
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"accounts: {e}")
     return {"success": len(errors) == 0, "errors": errors}
 
 @app.get("/api/sync", tags=["Sync"])
 async def fetch_all(supabase: Client = Depends(get_supabase)):
-    tables = ["parts", "invoices", "suppliers", "customers", "purchases", "expenses", "accounts", "liquids", "vehicles", "liquid_transactions", "settings"]
-    result = {}
+    tables = [
+        "parts", "invoices", "suppliers", "customers", "purchases", "expenses",
+        "accounts", "liquids", "vehicles", "liquid_transactions", "settings",
+    ]
+    result: Dict[str, Any] = {}
     for table in tables:
         res = supabase.table(table).select("*").execute()
         result[table] = res.data or []
     return result
 
-# ═══════════════════════════════════════════════
-# INFOBIP API
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# COMMUNICATIONS (Infobip)
+# ════════════════════════════════════════════════════════════════════
 
-INFOBIP_KEY = "21541083b63a455e4d911e59eb4df144-6912c053-35d0-46cd-adcf-abbf950ed629"
-INFOBIP_BASE = "https://api.infobip.com"
+INFOBIP_KEY = os.getenv("INFOBIP_API_KEY", "").strip()
+INFOBIP_BASE = os.getenv("INFOBIP_BASE_URL", "https://api.infobip.com").strip()
 
-@app.post("/api/send-sms", tags=["Infobip"])
+@app.post("/api/send-sms", tags=["Communications"])
 async def send_sms_api(req: InfobipSMSRequest):
+    if not INFOBIP_KEY:
+        raise HTTPException(status_code=503, detail="Infobip not configured (INFOBIP_API_KEY missing)")
     import httpx
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"{INFOBIP_BASE}/sms/2/text/advanced",
             headers={"Authorization": f"App {INFOBIP_KEY}", "Content-Type": "application/json"},
-            json={"messages": [{"destinations": [{"to": req.to.replace("+", "")}], "from": "PartsPro", "text": req.message}]}
+            json={"messages": [{"destinations": [{"to": req.to.replace("+", "")}], "from": "PartsPro", "text": req.message}]},
         )
         return resp.json()
 
-@app.post("/api/send-whatsapp", tags=["Infobip"])
+@app.post("/api/send-whatsapp", tags=["Communications"])
 async def send_whatsapp_api(req: InfobipWhatsAppRequest):
+    if not INFOBIP_KEY:
+        raise HTTPException(status_code=503, detail="Infobip not configured (INFOBIP_API_KEY missing)")
     import httpx
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"{INFOBIP_BASE}/whatsapp/1/message/text",
             headers={"Authorization": f"App {INFOBIP_KEY}", "Content-Type": "application/json"},
-            json={"from": "PartsPro", "to": req.to.replace("+", ""), "content": {"body": {"text": req.message, "type": "TEXT"}}}
+            json={"from": "PartsPro", "to": req.to.replace("+", ""), "content": {"body": {"text": req.message, "type": "TEXT"}}},
         )
         return resp.json()
 
-# ═══════════════════════════════════════════════
-# ANALYTICS API
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# ANALYTICS
+# ════════════════════════════════════════════════════════════════════
 
 @app.get("/api/analytics/summary", tags=["Analytics"])
 async def analytics_summary(supabase: Client = Depends(get_supabase)):
@@ -552,22 +993,30 @@ async def analytics_summary(supabase: Client = Depends(get_supabase)):
         "expenses_count": len(expenses),
     }
 
-# ═══════════════════════════════════════════════
-# HEALTH CHECK
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
+# HEALTH
+# ════════════════════════════════════════════════════════════════════
+
+@app.get("/api/", tags=["Health"])
+async def api_root():
+    return {"status": "Parts Pro API is running", "version": "2.1.0"}
 
 @app.get("/", tags=["Health"])
 async def root():
-    return {"status": "Parts Pro API is running", "version": "2.0.0"}
+    return {"status": "Parts Pro API is running", "version": "2.1.0"}
+
+@app.get("/api/health", tags=["Health"])
+async def api_health():
+    return {"status": "healthy"}
 
 @app.get("/health", tags=["Health"])
 async def health():
     return {"status": "healthy"}
 
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 # RUN
-# ═══════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)
