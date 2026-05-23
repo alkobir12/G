@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SUPABASE_URL=https://mcjqpvuynvtbvolqpbsz.supabase.co
+      - SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1janFwdnV5bnZ0YnZvbHFwYnN6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyOTE4NDUsImV4cCI6MjA5NDg2Nzg0NX0.3MH7YsYrF7Zfdu6iffGuC4PE_mAA9e5d2rU_9RTFHwY
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
