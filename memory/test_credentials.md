@@ -8,36 +8,51 @@
 
 ## Authentication
 
-The Parts Pro frontend ships with a localStorage-only auth layer (`src/services/auth.ts`) that
-auto-creates a default admin on first load. Per the H/Q discussion, real authentication will be
-added in a later phase; the app is publicly accessible at the preview URL.
+**No server-side auth required.** The tester can interact directly with the UI or curl `/api/*`
+without any tokens, cookies, or session setup.
 
-### Auto-created default admin (frontend only — localStorage)
+### Frontend auto-login (localStorage shim)
+
+On first page load, `src/services/auth.ts` calls `setupDefaultAdmin()` which writes a default
+admin record to `localStorage` and signs in automatically:
+
 - **Email:** `admin@partspro.com`
 - **Password:** `admin123`
 - **Role:** `admin`
 
-This admin is created automatically by `setupDefaultAdmin()` in `src/services/auth.ts` if no
-users exist yet. The session is persisted in `localStorage` keys `pp_users` / `pp_session` /
-`pp_role`. To start as a logged-out user, clear localStorage.
+No network call is made — this is entirely browser-side. To test the logged-out state, the
+tester can run `localStorage.clear()` in DevTools and reload (the page will show a "تسجيل
+الدخول" button in the top-right). After login the same `admin@partspro.com` / `admin123` works
+again (the credentials are stored in `localStorage["pp_users"]`).
 
-### Backend (FastAPI) auth
-**None.** The FastAPI backend (`/app/backend/main.py`) has no authentication; all `/api/*`
-routes are publicly accessible. Endpoints that need Supabase will return HTTP 503 until
-`SUPABASE_URL` and `SUPABASE_KEY` are configured (either in `/app/backend/.env` or via the
-in-app Settings page which writes to `localStorage` for the frontend and — best-effort — to
-the Supabase `settings` table).
+### Backend auth
 
-## Runtime configuration
+**None.** All `/api/*` endpoints are public. No cookies, no JWTs, no `Authorization` header.
 
-The Settings page (الإعدادات tab) accepts these keys at runtime:
-- `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY`
-- `VITE_GROQ_API_KEY`
-- `VITE_GOOGLE_API_KEY`
-- `VITE_FIREBASE_PROJECT_ID` / `VITE_FIREBASE_APP_ID` / `VITE_FIREBASE_MESSAGING_SENDER_ID`
-  (Firebase is currently disabled in `App.tsx`; these fields exist for forward compatibility.)
-- `VITE_INFOBIP_BASE_URL` / `VITE_INFOBIP_API_KEY`
-- `VITE_API_URL`
+## Service status (as of this snapshot)
 
-Keys are stored under the localStorage key `partspro_runtime_config` (JSON) and — if Supabase
-is configured — also persisted as a row in the `settings` table with `id = partspro_runtime_config`.
+| Service | Status |
+|---|---|
+| `SUPABASE_URL` + `SUPABASE_KEY` (backend `.env`) | ✅ configured |
+| `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` (frontend `.env`) | ✅ configured |
+| `VITE_GROQ_API_KEY` | ✅ configured |
+| `VITE_GOOGLE_API_KEY` | ✅ configured |
+| `VITE_FIREBASE_*` | ❌ intentionally empty (Firestore sync disabled) |
+| `VITE_INFOBIP_*` | ❌ intentionally empty (SMS/WA disabled) |
+| Supabase schema (`parts`, `invoices`, `customers`, ...) | ❌ **pending** — user must run `/app/backend/migration_v2.sql` once in Supabase SQL editor |
+
+## Expected behavior of API calls right now
+
+- `GET /api/openapi.json` → 200
+- `GET /api/parts` → **500** with `postgrest.exceptions.APIError: 'Could not find the table public.parts in the schema cache'` (PGRST205). This is **expected** — it confirms the Supabase connection works and the only missing piece is the schema.
+- After running `migration_v2.sql` once, `GET /api/parts` will return `200` with `[]`.
+
+## Notes for the tester
+
+- The "إعدادات قاعدة البيانات غير مكتملة" amber banner is now hidden (Supabase URL+key are set).
+- A small `Supabase` status pill is shown in the top-right of the header; until the schema is
+  migrated, it may show an "amber" `tables_missing` state.
+- Runtime config from the Settings page **overrides** env values. Test order: localStorage →
+  `.env`. Saving via Settings persists across reload (localStorage). Clearing via Settings →
+  "مسح الكل" reverts to env-only.
+- Supabase project ref: `uifvnppwgbxaqmorwgky` — for visibility in DB error messages.
