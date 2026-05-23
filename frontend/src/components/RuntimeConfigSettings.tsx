@@ -130,18 +130,9 @@ export default function RuntimeConfigSettings({ onSaved }: Props) {
           />
         </div>
 
-        {/* Firebase (optional, disabled by default but key still configurable) */}
-        <div className="md:col-span-2 flex items-center gap-2 text-violet-300/80 text-xs font-bold pt-3">
-          🔥 Firebase (اختياري — معطل حالياً)
-        </div>
-        <div>
-          <label className="block text-[11px] text-slate-400 mb-1">Firebase Project ID</label>
-          <input className={inputBase} value={draft.firebaseProjectId} onChange={(e) => update("firebaseProjectId", e.target.value.trim())} />
-        </div>
-        <div>
-          <label className="block text-[11px] text-slate-400 mb-1">Firebase App ID</label>
-          <input className={inputBase} value={draft.firebaseAppId} onChange={(e) => update("firebaseAppId", e.target.value.trim())} />
-        </div>
+        {/* Firebase removed (Phase 3) — Firestore sync was disabled and the
+            firebase npm dep was uninstalled. Leaving the runtime-config fields
+            in storage is harmless; they're just no longer surfaced in the UI. */}
 
         {/* Infobip */}
         <div className="md:col-span-2 flex items-center gap-2 text-rose-300/80 text-xs font-bold pt-3">

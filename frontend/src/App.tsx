@@ -33,7 +33,16 @@ import {
 } from "./services/auth";
 import AuthModal, { type RegisterData } from "./components/AuthModal";
 import RuntimeConfigSettings from "./components/RuntimeConfigSettings";
+import OnlineIndicator from "./components/OnlineIndicator";
+import DataManagementPanel from "./components/DataManagementPanel";
 import { isSupabaseRuntimeReady, RUNTIME_CONFIG_EVENT } from "./services/runtimeConfig";
+import { backendFetchAll, backendSyncAll, apiDelete, pingBackend } from "./services/apiClient";
+import {
+  partFromBackend, customerFromBackend, supplierFromBackend, invoiceFromBackend,
+  purchaseFromBackend, expenseFromBackend, accountFromBackend, settingsFromBackend,
+  partToBackend, customerToBackend, supplierToBackend, invoiceToBackend,
+  purchaseToBackend, expenseToBackend, accountToBackend,
+} from "./services/schemaAdapter";
 import {
   validatePart, validateSupplier, validateCustomer,
   validateInvoice, validateExpense,
@@ -43,7 +52,9 @@ import {
   validateBatch,
   applyJournalToAccounts, generateJournalId,
 } from "./services/journal";
-import { useFirestoreSync } from "./hooks/useFirestoreSync"; // TODO: Firebase disabled per user decision — re-enable by uncommenting the calls below.
+// Firestore sync removed per Phase 3 — backend (FastAPI + Supabase) is the source of truth.
+// To re-enable Firebase later: restore src/hooks/useFirestoreSync.ts, src/services/firestore.ts,
+// src/services/firebase.ts, reinstall the `firebase` npm package, and uncomment its import here.
 
 import {
   MITSUBISHI_PARTS, INVOICE_PARTS, SEED_SUPPLIERS, SEED_CUSTOMERS,
@@ -590,49 +601,72 @@ export default function App() {
   const [supabaseStatus, setSupabaseStatus] = useState<"checking" | "connected" | "disconnected" | "tables_missing">("checking");
   const [syncing, setSyncing] = useState(false);
 
-  // ── Ping Supabase on mount ──
+  // ── Boot: fetch all data from FastAPI backend (which talks to Supabase) ──
   useEffect(() => {
-    if (!isSupabaseConfigured()) { setSupabaseStatus("disconnected"); return; }
-    pingSupabase().then((ok) => {
+    let cancelled = false;
+    pingBackend().then((ok) => {
+      if (cancelled) return;
       if (!ok) { setSupabaseStatus("disconnected"); return; }
-      fetchAllFromSupabase().then((result) => {
-        if (result.errors.length > 0 && result.errors.some((e: string) => e.includes("does not exist"))) {
-          setSupabaseStatus("tables_missing");
-        } else {
-          setSupabaseStatus("connected");
-          // Only load from Supabase if localStorage is empty (first visit)
-          const local = loadData();
-          const hasLocalData = local && (
-            (local.parts && local.parts.length > 0) ||
-            (local.suppliers && local.suppliers.length > 0) ||
-            (local.invoices && local.invoices.length > 0)
-          );
-          if (!hasLocalData) {
-            // No local data — use Supabase (seed or synced)
-            if (result.parts && result.parts.length > 0) setParts(result.parts);
-            if (result.suppliers && result.suppliers.length > 0) setSuppliers(result.suppliers);
-            if (result.customers && result.customers.length > 0) setCustomers(result.customers);
-            if (result.invoices && result.invoices.length > 0) setInvoices(result.invoices);
-            if (result.purchases && result.purchases.length > 0) setPurchases(result.purchases);
-            if (result.expenses && result.expenses.length > 0) setExpenses(result.expenses);
-            if (result.accounts && result.accounts.length > 0) setAccounts(result.accounts);
-            if (result.journal && result.journal.length > 0) setJournal(result.journal);
-            if (result.settings) setSettings(result.settings);
+      backendFetchAll().then((result) => {
+        if (cancelled) return;
+        setSupabaseStatus("connected");
+        const local = loadData();
+        const hasLocalData = local && (
+          (local.parts && local.parts.length > 0) ||
+          (local.suppliers && local.suppliers.length > 0) ||
+          (local.invoices && local.invoices.length > 0)
+        );
+        // Prefer backend data on every boot — localStorage is offline cache only.
+        // Only fall back to local if the backend returns empty AND we have something cached.
+        const anyBackendData =
+          (result.parts && result.parts.length > 0) ||
+          (result.invoices && result.invoices.length > 0) ||
+          (result.customers && result.customers.length > 0) ||
+          (result.suppliers && result.suppliers.length > 0);
+        if (anyBackendData) {
+          if (result.parts) setParts((result.parts as any[]).map(partFromBackend) as any);
+          if (result.suppliers) setSuppliers((result.suppliers as any[]).map(supplierFromBackend) as any);
+          if (result.customers) setCustomers((result.customers as any[]).map(customerFromBackend) as any);
+          if (result.invoices) setInvoices((result.invoices as any[]).map(invoiceFromBackend) as any);
+          if (result.purchases) setPurchases((result.purchases as any[]).map(purchaseFromBackend) as any);
+          if (result.expenses) setExpenses((result.expenses as any[]).map(expenseFromBackend) as any);
+          if (result.accounts) setAccounts((result.accounts as any[]).map(accountFromBackend) as any);
+          if (result.settings && Array.isArray(result.settings) && result.settings.length > 0) {
+            setSettings(settingsFromBackend(result.settings[0]) as any);
           }
-          // If local data exists (even empty arrays), keep it — user chose to delete
+        } else if (!hasLocalData) {
+          // backend empty + cache empty → leave the seed defaults already in state
         }
+      }).catch((err) => {
+        console.warn("[boot] backend fetch failed:", err);
+        if (!cancelled) setSupabaseStatus("disconnected");
       });
     });
+    return () => { cancelled = true; };
   }, []);
 
-  // ── Auto-sync to Supabase on data change ──
+  // ── Auto-sync to backend (debounced 3s after last change) ──
   useEffect(() => {
     if (supabaseStatus !== "connected" || syncing) return;
     const timeout = setTimeout(() => {
-      syncAllToSupabase({ parts, suppliers, customers, invoices, purchases, expenses, accounts, settings }).catch(() => {});
-    }, 3000); // Debounce: sync 3s after last change
+      const payload = {
+        parts: (parts as any[]).map(partToBackend),
+        suppliers: (suppliers as any[]).map(supplierToBackend),
+        customers: (customers as any[]).map(customerToBackend),
+        invoices: (invoices as any[]).map(invoiceToBackend),
+        purchases: (purchases as any[]).map(purchaseToBackend),
+        expenses: (expenses as any[]).map(expenseToBackend),
+        accounts: (accounts as any[]).map(accountToBackend),
+        liquids: [],
+        vehicles: [],
+        liquid_txns: [],
+      };
+      backendSyncAll(payload).catch((err) => {
+        console.warn("[autosync] backend sync failed:", err);
+      });
+    }, 3000);
     return () => clearTimeout(timeout);
-  }, [parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings]);
+  }, [parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings, supabaseStatus, syncing]);
 
   // Persist all data to localStorage
   useEffect(() => {
@@ -804,11 +838,12 @@ export default function App() {
     };
 
     switch (type) {
-      case "part": setParts((prev) => prev.filter((p) => p.id !== id)); addToast("تم حذف القطعة", "success"); break;
-      case "supplier": setSuppliers((prev) => prev.filter((s) => s.id !== id)); addToast("تم حذف المورد", "success"); break;
-      case "customer": setCustomers((prev) => prev.filter((c) => c.id !== id)); addToast("تم حذف العميل", "success"); break;
+      case "part": setParts((prev) => prev.filter((p) => p.id !== id)); apiDelete(`/api/parts/${encodeURIComponent(id)}`).catch(() => {}); addToast("تم حذف القطعة", "success"); break;
+      case "supplier": setSuppliers((prev) => prev.filter((s) => s.id !== id)); apiDelete(`/api/suppliers/${encodeURIComponent(id)}`).catch(() => {}); addToast("تم حذف المورد", "success"); break;
+      case "customer": setCustomers((prev) => prev.filter((c) => c.id !== id)); apiDelete(`/api/customers/${encodeURIComponent(id)}`).catch(() => {}); addToast("تم حذف العميل", "success"); break;
       case "expense": {
         setExpenses((prev) => prev.filter((e) => e.id !== id));
+        apiDelete(`/api/expenses/${encodeURIComponent(id)}`).catch(() => {});
         reverseJournal(id);
         addToast("تم حذف المصروف وعكس القيد المحاسبي", "success");
         break;
@@ -822,6 +857,7 @@ export default function App() {
             return item ? { ...p, stock: p.stock + item.qty } : p;
           }));
           setInvoices((prev) => prev.filter((i) => i.id !== id));
+          apiDelete(`/api/invoices/${encodeURIComponent(id)}`).catch(() => {});
           reverseJournal(id);
           addToast("تم حذف الفاتورة وإرجاع القطع للمخزون وعكس القيد المحاسبي", "success");
         }
@@ -836,6 +872,7 @@ export default function App() {
             return item ? { ...p, stock: Math.max(0, p.stock - item.qty) } : p;
           }));
           setPurchases((prev) => prev.filter((p) => p.id !== id));
+          apiDelete(`/api/purchases/${encodeURIComponent(id)}`).catch(() => {});
           reverseJournal(id);
           addToast("تم حذف فاتورة الشراء وخصم القطع من المخزون وعكس القيد المحاسبي", "success");
         }
@@ -882,10 +919,8 @@ export default function App() {
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 
-    // Sync to Supabase
-    if (isSupabaseConfigured()) {
-      syncAllToSupabase(data).catch(() => {});
-    }
+    // Best-effort backend sync of the cleared state
+    backendSyncAll(data as any).catch(() => {});
     setResetConfirm(0);
     addToast("تم حذف جميع البيانات بنجاح - التطبيق فارغ الآن", "success");
   };
@@ -2202,6 +2237,8 @@ export default function App() {
 
         <RuntimeConfigSettings onSaved={() => { try { window.dispatchEvent(new Event(RUNTIME_CONFIG_EVENT)); } catch {} }} />
 
+        <DataManagementPanel addToast={addToast} onChange={() => { try { window.location.reload(); } catch {} }} />
+
         <GlassCard title="معلومات المتجر" icon={Building2}>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Input label="اسم المتجر" value={settings.company_name} onChange={(v) => setSettings((s) => ({ ...s, company_name: v }))} />
@@ -2472,6 +2509,7 @@ export default function App() {
             {navItems.find((n) => n.key === page)?.label || "Parts Pro"}
           </h2>
           <div className="flex items-center gap-2">
+            <OnlineIndicator />
             <SupabaseStatusBadge />
             {user ? (
               <div className="flex items-center gap-2">
