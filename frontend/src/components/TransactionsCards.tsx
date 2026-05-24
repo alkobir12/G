@@ -4,7 +4,7 @@ import { useState, useMemo } from "react";
 import {
   Search, ShoppingCart, Receipt, ClipboardList, TrendingUp, TrendingDown,
   DollarSign, Pencil, Trash2, Printer, BarChart3, Building2, List,
-  Calendar, Package, User, Truck,
+  Calendar, Package, User, Truck, Plus,
 } from "lucide-react";
 
 const fmt = (n: number) => (n || 0).toLocaleString("ar-SA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -25,6 +25,9 @@ interface Props {
   onDeleteExpense?: (id: string) => void;
   onEditPurchase?: (p: Purchase) => void;
   onEditExpense?: (e: Expense) => void;
+  onAddExpense?: () => void;
+  onAddPurchase?: () => void;
+  onNavigate?: (page: string) => void;
   Btn: any;
   StatusPill: any;
 }
@@ -33,8 +36,21 @@ export default function TransactionsCards({
   purchases, expenses,
   onDeletePurchase, onDeleteExpense,
   onEditPurchase, onEditExpense,
+  onAddExpense, onAddPurchase,
+  onNavigate,
   Btn, StatusPill,
 }: Props) {
+  // Internal aliases so the original transactions_cards.tsx body keeps working.
+  const setModal = (m: { type: string; data?: any }) => {
+    if (m.type === "expense") {
+      if (m.data) onEditExpense?.(m.data);
+      else onAddExpense?.();
+    } else if (m.type === "purchase") {
+      if (m.data) onEditPurchase?.(m.data);
+      else onAddPurchase?.();
+    }
+  };
+  const setPage = (p: string) => onNavigate?.(p);
 
   const handleDelete = (kind: "purchase" | "expense", id: string) => {
     if (kind === "purchase") onDeletePurchase?.(id);

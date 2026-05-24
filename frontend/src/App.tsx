@@ -1889,6 +1889,9 @@ export default function App() {
         onDeleteExpense={(id) => handleDelete("expense", id)}
         onEditPurchase={(p) => setModal({ type: "purchase", data: p })}
         onEditExpense={(e) => setModal({ type: "expense", data: e })}
+        onAddPurchase={() => setPage("pos")}
+        onAddExpense={() => setModal({ type: "expense" })}
+        onNavigate={(p) => setPage(p as any)}
         Btn={Btn}
         StatusPill={StatusPill}
       />
