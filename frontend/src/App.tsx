@@ -74,7 +74,7 @@ import { fmt, fmtInt, today, newId, stockStatus } from "./lib/utils";
 type ToastType = "success" | "error" | "info" | "warning";
 interface ToastItem { id: string; message: string; type: ToastType; }
 
-type Page = "dashboard" | "inventory" | "pos" | "customers" | "transactions" | "accounts" | "settings";
+type Page = "dashboard" | "inventory" | "pos" | "customers" | "transactions" | "accounts" | "analytics" | "settings";
 
 // ═══════════════════════════════════════════════════════════════
 // HOOK: useMediaQuery
@@ -964,6 +964,7 @@ export default function App() {
     { key: "customers", label: "العملاء", icon: Users },
     { key: "transactions", label: "المشتريات والمصروفات", icon: ClipboardList },
     { key: "accounts", label: "الحسابات", icon: BookOpen },
+    { key: "analytics", label: "تحليلات راكان", icon: BarChart3 },
     { key: "settings", label: "الإعدادات", icon: Cog },
   ];
 
@@ -1220,19 +1221,19 @@ export default function App() {
           </div>
           <div className="flex items-center gap-2">
             <SupabaseStatusBadge />
-            <div className="text-[10px] text-slate-500 font-mono">v3.1</div>
+            <div className="text-[10px] text-slate-500 font-mono">v3.2</div>
           </div>
         </div>
 
-        {/* ── KPI Row ── */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* ── KPI Strip (kept from legacy dashboard) ── */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <KPI title="الإيرادات اليومية" value={fmt(invoices.filter(i => i.date === today()).reduce((s, i) => s + i.total, 0))} icon={DollarSign} color="emerald" />
           <KPI title="إجمالي المخزون" value={fmtInt(stats.totalStock)} subtitle={`${stats.totalParts} قطعة`} icon={Package2} color="sky" trend={stats.expectedProfit > 0 ? `أرباح متوقعة ${fmt(stats.expectedProfit)}` : undefined} trendUp={stats.expectedProfit > 0} />
-          <KPI title="إجمالي الإيرادات" value={fmt(stats.totalSales)} subtitle={`شامل الضريبة`} icon={Receipt} color="amber" />
-          <KPI title="الأرباح الصافية" value={fmt(stats.netProfit)} subtitle={`بعد الخصم والمصروفات`} icon={TrendingUp} color="emerald" trend={stats.netProfit >= 0 ? "ربح" : "خسارة"} trendUp={stats.netProfit >= 0} />
+          <KPI title="إجمالي الإيرادات" value={fmt(stats.totalSales)} subtitle="شامل الضريبة" icon={Receipt} color="amber" />
+          <KPI title="الأرباح الصافية" value={fmt(stats.netProfit)} subtitle="بعد الخصم والمصروفات" icon={TrendingUp} color="emerald" trend={stats.netProfit >= 0 ? "ربح" : "خسارة"} trendUp={stats.netProfit >= 0} />
         </div>
 
-        {/* ── Alerts ── */}
+        {/* ── Quick alerts ── */}
         {(stats.lowStock > 0 || stats.outOfStock > 0) && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {stats.lowStock > 0 && (
@@ -1252,24 +1253,14 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Charts ── */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <GlassCard title="مقارنة الإيرادات والمصروفات" icon={BarChart3}>
-            <RevenueExpenseDisplay data={revenueExpenseData} />
-          </GlassCard>
-          <GlassCard title="الفئات حسب القيمة" icon={PieChart}>
-            <CategoryProgressList data={categoryData} />
-          </GlassCard>
-        </div>
-
-        <GlassCard title="المبيعات اليومية (آخر 7 أيام)" icon={BarChart4}>
-          <DailySalesCards data={salesData} />
-        </GlassCard>
-
-        {/* ── Low Stock Alert Table ── */}
-        <GlassCard title="تنبيهات المخزون" icon={AlertTriangle} action={<span className="text-[10px] text-slate-500">{stats.lowStock} قطعة منخفضة</span>}>
-          <LowStockDisplay parts={parts} />
-        </GlassCard>
+        {/* ── AnalyticsDashboard (replaces old charts/categories/low-stock-table) ── */}
+        <AnalyticsDashboard
+          parts={parts}
+          suppliers={suppliers}
+          purchases={purchases}
+          expenses={expenses}
+          onNavigate={(p: string) => setPage(p as Page)}
+        />
       </div>
     );
   }
@@ -2065,18 +2056,17 @@ export default function App() {
   // ═══════════════════════════════════════════════════════════════
 
   function AccountsView() {
-    const [accountTab, setAccountTab] = useState<"tree" | "ledger" | "auditor" | "analytics">("tree");
+    const [accountTab, setAccountTab] = useState<"tree" | "ledger" | "auditor">("tree");
 
     return (
       <div className="space-y-4" dir="rtl">
         <h2 className="text-xl font-black text-slate-100 flex items-center gap-2"><BookOpen className="w-6 h-6 text-amber-400" /> الحسابات</h2>
-        {/* Subtabs */}
+        {/* Subtabs (analytics removed in Step 2 — it's now a top-level nav item) */}
         <div className="flex gap-1 bg-white/5 p-1 rounded-xl flex-wrap">
           {[
             { key: "tree" as const, label: "شجرة الحسابات", icon: List },
             { key: "ledger" as const, label: "الأستاذ", icon: BookOpen },
             { key: "auditor" as const, label: "المدقق المالي", icon: ShieldCheck },
-            { key: "analytics" as const, label: "تحليلات راكان", icon: BarChart3 },
           ].map((t) => (
             <button key={t.key} onClick={() => setAccountTab(t.key)}
               className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-bold transition-all min-w-[120px] ${accountTab === t.key ? "bg-amber-500 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"}`}>
@@ -2088,12 +2078,6 @@ export default function App() {
         {accountTab === "tree" && <LedgerView accounts={accounts} />}
         {accountTab === "ledger" && <CustomerLedger invoices={invoices} purchases={purchases} expenses={expenses} customers={customers} suppliers={suppliers} />}
         {accountTab === "auditor" && <FinancialAuditor accounts={accounts} invoices={invoices} purchases={purchases} expenses={expenses} parts={parts} customers={customers} suppliers={suppliers} />}
-        {accountTab === "analytics" && (
-          <div className="space-y-4">
-            <RakanAnalytics parts={parts} invoices={invoices} purchases={purchases} expenses={expenses} priceHistory={priceHistory} accounts={accounts} settings={settings} />
-            <AnalyticsDashboard parts={parts} suppliers={suppliers} purchases={purchases} expenses={expenses} onNavigate={(p) => setPage(p as any)} />
-          </div>
-        )}
       </div>
     );
   }
@@ -2609,6 +2593,12 @@ export default function App() {
             {page === "customers" && <CustomersView />}
             {page === "transactions" && <TransactionsView />}
             {page === "accounts" && <AccountsView />}
+            {page === "analytics" && (
+              <div className="space-y-4">
+                <RakanAnalytics parts={parts} invoices={invoices} purchases={purchases} expenses={expenses} priceHistory={priceHistory} accounts={accounts} settings={settings} />
+                <AnalyticsDashboard parts={parts} suppliers={suppliers} purchases={purchases} expenses={expenses} onNavigate={(p: string) => setPage(p as Page)} />
+              </div>
+            )}
             {page === "settings" && <SettingsView />}
           </div>
         

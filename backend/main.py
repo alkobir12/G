@@ -126,6 +126,7 @@ class PartModel(BaseModel):
     cost: float = 0
     price: float = 0
     wholesale: float = 0
+    supplier_id: Optional[str] = None
 
 class InvoiceItem(BaseModel):
     # part_id is optional — frontend allows free-text items not in the parts table.

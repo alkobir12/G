@@ -25,6 +25,7 @@ export const partFromBackend = (p: AnyRow): AnyRow => ({
   cost: Number(p.cost ?? 0),
   price: Number(p.price ?? 0),
   wholesale: Number(p.wholesale ?? 0),
+  supplier_id: p.supplier_id ?? "",
 });
 
 // ---- Customers ----

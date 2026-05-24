@@ -6,7 +6,7 @@ import { Database, Sparkles, Trash2, CheckCircle, XCircle } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { apiPost, backendSyncAll } from "../services/apiClient";
 import {
-  MITSUBISHI_PARTS, INVOICE_PARTS, SEED_SUPPLIERS, SEED_CUSTOMERS,
+  MITSUBISHI_PARTS, INVOICE_PARTS, ALQARAWI_PARTS, SEED_SUPPLIERS, SEED_CUSTOMERS,
   SEED_INVOICES, SEED_PURCHASES, SEED_EXPENSES, SEED_ACCOUNTS,
 } from "../data/seed";
 import {
@@ -50,7 +50,7 @@ export default function DataManagementPanel({ onChange, addToast }: Props) {
     setProgress(5);
     try {
       const payload = {
-        parts: [...MITSUBISHI_PARTS, ...INVOICE_PARTS].map(partToBackend),
+        parts: [...MITSUBISHI_PARTS, ...INVOICE_PARTS, ...ALQARAWI_PARTS].map(partToBackend),
         suppliers: SEED_SUPPLIERS.map(supplierToBackend),
         customers: SEED_CUSTOMERS.map(customerToBackend),
         invoices: SEED_INVOICES.map(invoiceToBackend),
