@@ -33,6 +33,7 @@ from routers.finance import router as finance_router
 from routers.ai import router as ai_router
 from routers.auth import router as auth_router
 from routers.journal import router as journal_router, build_purchase_journal, build_expense_journal
+from routers.inventory_movements import router as inventory_movements_router, record_movement
 
 # ── Supabase client (async) ──
 from supabase import create_client, Client
@@ -106,6 +107,7 @@ app.include_router(finance_router)
 app.include_router(ai_router)
 app.include_router(auth_router)
 app.include_router(journal_router)
+app.include_router(inventory_movements_router)
 
 # ════════════════════════════════════════════════════════════════════
 # MODELS

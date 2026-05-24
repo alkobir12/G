@@ -15,6 +15,8 @@ import {
   LogOut, KeyRound,
 } from "lucide-react";
 import RakanAnalytics from "./components/RakanAnalytics";
+import AnalyticsDashboard from "./components/AnalyticsDashboard";
+import TransactionsCards from "./components/TransactionsCards";
 import FinancialAuditor from "./components/FinancialAuditor";
 import CustomerLedger from "./components/CustomerLedger";
 import JarvisChat from "./components/JarvisChat";
@@ -35,6 +37,7 @@ import AuthModal, { type RegisterData } from "./components/AuthModal";
 import RuntimeConfigSettings from "./components/RuntimeConfigSettings";
 import OnlineIndicator from "./components/OnlineIndicator";
 import DataManagementPanel from "./components/DataManagementPanel";
+import LowStockBadge from "./components/LowStockBadge";
 import { isSupabaseRuntimeReady, RUNTIME_CONFIG_EVENT } from "./services/runtimeConfig";
 import { backendFetchAll, backendSyncAll, apiDelete, pingBackend } from "./services/apiClient";
 import {
@@ -1878,6 +1881,22 @@ export default function App() {
   // ═══════════════════════════════════════════════════════════════
 
   function TransactionsView() {
+    return (
+      <TransactionsCards
+        purchases={purchases}
+        expenses={expenses}
+        onDeletePurchase={(id) => handleDelete("purchase", id)}
+        onDeleteExpense={(id) => handleDelete("expense", id)}
+        onEditPurchase={(p) => setModal({ type: "purchase", data: p })}
+        onEditExpense={(e) => setModal({ type: "expense", data: e })}
+        Btn={Btn}
+        StatusPill={StatusPill}
+      />
+    );
+  }
+
+  // (legacy table-based TransactionsView removed in Phase 4.5 — see TransactionsCards.tsx)
+  function _LegacyTransactionsView() {
     const [txTab, setTxTab] = useState<"all" | "purchases" | "expenses">("all");
     const [search, setSearch] = useState("");
 
@@ -2066,7 +2085,12 @@ export default function App() {
         {accountTab === "tree" && <LedgerView accounts={accounts} />}
         {accountTab === "ledger" && <CustomerLedger invoices={invoices} purchases={purchases} expenses={expenses} customers={customers} suppliers={suppliers} />}
         {accountTab === "auditor" && <FinancialAuditor accounts={accounts} invoices={invoices} purchases={purchases} expenses={expenses} parts={parts} customers={customers} suppliers={suppliers} />}
-        {accountTab === "analytics" && <RakanAnalytics parts={parts} invoices={invoices} purchases={purchases} expenses={expenses} priceHistory={priceHistory} accounts={accounts} settings={settings} />}
+        {accountTab === "analytics" && (
+          <div className="space-y-4">
+            <RakanAnalytics parts={parts} invoices={invoices} purchases={purchases} expenses={expenses} priceHistory={priceHistory} accounts={accounts} settings={settings} />
+            <AnalyticsDashboard parts={parts} suppliers={suppliers} purchases={purchases} expenses={expenses} onNavigate={(p) => setPage(p as any)} />
+          </div>
+        )}
       </div>
     );
   }
@@ -2534,6 +2558,7 @@ export default function App() {
             {navItems.find((n) => n.key === page)?.label || "Parts Pro"}
           </h2>
           <div className="flex items-center gap-2">
+            <LowStockBadge parts={parts} onClick={() => setPage("inventory")} />
             <OnlineIndicator />
             <SupabaseStatusBadge />
             {user ? (
