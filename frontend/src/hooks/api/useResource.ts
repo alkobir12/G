@@ -2,7 +2,7 @@
 //   useResource.ts — Generic React Query hooks for every entity
 // ═══════════════════════════════════════════════════════════════
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, apiPut, apiDelete } from "../services/apiClient";
+import { apiGet, apiPost, apiPut, apiDelete } from "../../services/apiClient";
 
 export interface ListFilters {
   search?: string;

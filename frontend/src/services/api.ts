@@ -2,7 +2,7 @@
 // Parts Pro API Client — Frontend to FastAPI Backend
 // ═══════════════════════════════════════════════════════════
 
-const API_BASE = import.meta.env.VITE_API_URL || "https://partspro-api.onrender.com";
+const API_BASE = import.meta.env.VITE_API_URL || (typeof window !== "undefined" ? window.location.origin : "");
 
 // ═══ Helper ═══
 async function api(method: string, path: string, body?: any) {

@@ -1923,8 +1923,8 @@ export default function App() {
       <TransactionsCards
         purchases={purchases}
         expenses={expenses}
-        onDeletePurchase={(id) => handleDelete("purchase", id)}
-        onDeleteExpense={(id) => handleDelete("expense", id)}
+        onDeletePurchase={(id) => handleDeletePurchase(id)}
+        onDeleteExpense={(id) => handleDeleteExpense(id)}
         onEditPurchase={(p) => setModal({ type: "purchase", data: p })}
         onEditExpense={(e) => setModal({ type: "expense", data: e })}
         onAddPurchase={() => setPage("pos")}
@@ -2408,54 +2408,6 @@ export default function App() {
               <Btn variant="danger" size="sm" onClick={() => setResetConfirm(1)} icon={Trash2}>حذف جميع البيانات</Btn>
               <Btn variant="outline" size="sm" onClick={() => setResetConfirm(4)} icon={RotateCcw}>إعادة تحميل البيانات التجريبية</Btn>
             </div>
-          </div>
-        </GlassCard>
-
-        <GlassCard title="حساب المدير" icon={ShieldCheck}>
-          <div className="space-y-3">
-            <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl">
-              <p className="text-xs text-amber-400 font-bold mb-2">بيانات حساب المدير الافتراضي:</p>
-              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                <div>
-                  <span className="text-slate-500">البريد:</span>
-                  <span className="text-slate-200 mr-1">{getDefaultAdmin().email}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500">كلمة المرور:</span>
-                  <span className="text-slate-200 mr-1">{getDefaultAdmin().password}</span>
-                </div>
-              </div>
-            </div>
-            <div className="flex gap-2 flex-wrap">
-              <Btn
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  import("./services/auth").then(({ resetDefaultAdmin }) => {
-                    resetDefaultAdmin();
-                    addToast("تم إعادة تعيين كلمة مرور المدير إلى: admin123", "success");
-                  });
-                }}
-                icon={KeyRound}
-              >
-                إعادة تعيين كلمة المرور
-              </Btn>
-              <Btn
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  navigator.clipboard?.writeText(
-                    `البريد: ${getDefaultAdmin().email} | كلمة المرور: ${getDefaultAdmin().password}`
-                  );
-                  addToast("تم نسخ بيانات الدخول", "success");
-                }}
-              >
-                نسخ البيانات
-              </Btn>
-            </div>
-            <p className="text-[10px] text-slate-500">
-              يمكنك تسجيل الدخول بهذا الحساب أو إنشاء حسابات جديدة من صفحة تسجيل الدخول.
-            </p>
           </div>
         </GlassCard>
 
