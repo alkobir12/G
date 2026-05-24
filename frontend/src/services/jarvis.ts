@@ -1,35 +1,26 @@
 // ═══════════════════════════════════════════════════════════════
 // J.A.R.V.I.S — Just A Rather Very Intelligent System
 // ═══════════════════════════════════════════════════════════════
-// AI CEO & Chief Architect for Parts Pro ERP
+// AI CEO & Chief Architect for Parts Pro ERP.
+// Phase 4 §C1: All AI calls go through the FastAPI backend proxy.
+// No API keys are referenced in this file or anywhere in the browser bundle.
 // ═══════════════════════════════════════════════════════════════
 
-import Groq from "groq-sdk";
 import { buildJarvisSystemPrompt } from "./jarvis_config";
-
-// ═══ API Keys via Vite Environment Variables ═══
-// In production, these MUST be set at build time via CI/CD secrets
-// NEVER commit .env file with real keys to Git
-const GROQ_KEY = import.meta.env.VITE_GROQ_API_KEY || "";
-const GOOGLE_KEY = import.meta.env.VITE_GOOGLE_API_KEY || "";
-
-const groq = GROQ_KEY
-  ? new Groq({ apiKey: GROQ_KEY, dangerouslyAllowBrowser: true })
-  : null;
+import { apiPost } from "./apiClient";
 
 export type Engine = "auto" | "llama" | "gemini";
 
 let activeEngine: Engine = "auto";
-
 export function setEngine(e: Engine) { activeEngine = e; }
 export function getEngine(): Engine { return activeEngine; }
 
-export function isAIConfigured(): boolean {
-  return Boolean(GROQ_KEY) || Boolean(GOOGLE_KEY);
-}
+/** The backend gates this — we always assume AI is available client-side and
+ *  let the proxy return 503 if neither key is set on the server. */
+export function isAIConfigured(): boolean { return true; }
 
 // ═══════════════════════════════════════════════════════════════
-// Core: askJarvis
+// Core: askJarvis — routes through /api/ai/groq/chat or /api/ai/gemini/generate
 // ═══════════════════════════════════════════════════════════════
 
 export async function askJarvis(
@@ -38,68 +29,59 @@ export async function askJarvis(
 ): Promise<{ text: string; engine: string; latency: number }> {
   const start = performance.now();
 
-  if (!isAIConfigured()) {
-    return {
-      text: "لم يتم تفعيل الذكاء الاصطناعي. يرجى إضافة مفاتيح API في إعدادات النظام.",
-      engine: "غير مفعل",
-      latency: 0,
-    };
-  }
-
-  // Build CEO system prompt with live ERP context
   const system = buildJarvisSystemPrompt(ctx);
   const arabicReminder = "\n\nمهم: الرد بالعربية فقط.";
-
   const last = msgs[msgs.length - 1]?.content.toLowerCase() || "";
 
   const useGemini = activeEngine === "gemini" || (activeEngine === "auto" && last.length < 100);
   const useLlama = activeEngine === "llama" || (activeEngine === "auto" && last.length >= 100);
 
-  if (useGemini && GOOGLE_KEY) {
+  // Try Gemini first if selected
+  if (useGemini) {
     try {
-      const prompt = `${system}${arabicReminder}\n\n${msgs.map(m => `${m.role === "user" ? "Human" : "Jarvis"}: ${m.content}`).join("\n")}`;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_KEY}`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 1024 },
-        }),
-      });
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "لم يصل رد.";
-      return { text, engine: "جيميني 2.0", latency: Math.round(performance.now() - start) };
-    } catch { /* fallback to LLaMA */ }
+      const prompt =
+        `${system}${arabicReminder}\n\n` +
+        msgs.map((m) => `${m.role === "user" ? "Human" : "Jarvis"}: ${m.content}`).join("\n");
+      const data = await apiPost<{ content: string }>("/api/ai/gemini/generate", { prompt });
+      if (data.content) {
+        return { text: data.content, engine: "جيميني 2.0", latency: Math.round(performance.now() - start) };
+      }
+    } catch (_e) {
+      // fall through to LLaMA
+    }
   }
 
-  if (useLlama && groq) {
+  // LLaMA via Groq proxy
+  if (useLlama || useGemini /* gemini failed */) {
     try {
       const chatMsgs = [
-        { role: "system" as const, content: system + arabicReminder },
-        ...msgs.map(m => ({ role: m.role === "user" ? "user" as const : "assistant" as const, content: m.content })),
+        { role: "system", content: system + arabicReminder },
+        ...msgs.map((m) => ({ role: m.role === "user" ? "user" : "assistant", content: m.content })),
       ];
-      const completion = await groq.chat.completions.create({
+      const data = await apiPost<{ content: string }>("/api/ai/groq/chat", {
         messages: chatMsgs,
         model: "llama-3.3-70b-versatile",
         temperature: 0.7,
         max_tokens: 1024,
       });
-      const text = completion.choices[0]?.message?.content || "لم يصل رد.";
+      const text = data.content || "لم يصل رد.";
       return { text, engine: "لاما 3.3 70B", latency: Math.round(performance.now() - start) };
     } catch (err: any) {
-      const text = err.status === 429
-        ? "تم تجاوز الحد. أعد المحاولة بعد 60 ثانية."
-        : `خطأ: ${err.message || "غير معروف"}`;
+      const text =
+        err.status === 429
+          ? "تم تجاوز الحد. أعد المحاولة بعد 60 ثانية."
+          : err.status === 503
+          ? "الذكاء الاصطناعي غير مُعد على الخادم — يرجى مراجعة إعدادات الخادم."
+          : `خطأ: ${err.message || "غير معروف"}`;
       return { text, engine: "خطأ", latency: Math.round(performance.now() - start) };
     }
   }
 
-  return { text: "جميع المحركات متوقفة. تحقق من إعدادات API.", engine: "لا شيء", latency: 0 };
+  return { text: "جميع المحركات متوقفة.", engine: "لا شيء", latency: 0 };
 }
 
 // ═══════════════════════════════════════════════════════════════
-// Jarvis Skills — Analysis Tools
+// Jarvis Skills — Analysis Tools (pure functions, no AI calls)
 // ═══════════════════════════════════════════════════════════════
 
 export async function jarvisAnalyzeInventory(parts: any[]): Promise<string> {

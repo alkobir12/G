@@ -2,25 +2,29 @@
 //   Runtime Config — Parts Pro ERP
 // ═══════════════════════════════════════════════════════════════
 //
-// Source of truth for API keys / endpoints. Read order on every
-// call to getRuntimeConfig():
-//   1. localStorage key `partspro_runtime_config` (set via Settings page)
-//   2. Vite import.meta.env.VITE_* fallback (build-time)
+// Source of truth for the per-tenant settings that legitimately live in the
+// browser:
+//   - Supabase URL + anon key (browser → Supabase direct fallback path; the
+//     primary path is now FastAPI backend which has its own SUPABASE_KEY)
+//   - Infobip SMS/WhatsApp credentials (only used by the in-app invoice
+//     preview to send SMS — no backend route consumes them)
+//   - apiUrl (Vite base override for /api/* calls)
 //
-// When the user updates keys via the Settings page, we:
-//   - persist the new object to localStorage
-//   - emit a `partspro:runtime-config:changed` window event so service
-//     singletons (supabase, groq) can rebuild their clients lazily.
+// IMPORTANT: Groq and Google AI keys are NOT here. They are server-only —
+// stored in /app/backend/.env and proxied via /api/ai/groq/chat and
+// /api/ai/gemini/generate. (Phase 4 §C1: key exposure remediation.)
+//
+// Read order in getRuntimeConfig():
+//   1. localStorage["partspro_runtime_config"]   (set via Settings page)
+//   2. Vite import.meta.env.VITE_*               (build-time)
+//
+// When the user updates a key via the Settings page, saveRuntimeConfig()
+// emits `partspro:runtime-config:changed` so service singletons rebuild.
 // ═══════════════════════════════════════════════════════════════
 
 export interface RuntimeConfig {
   supabaseUrl: string;
   supabaseAnonKey: string;
-  groqApiKey: string;
-  googleApiKey: string;
-  firebaseProjectId: string;
-  firebaseAppId: string;
-  firebaseMessagingSenderId: string;
   infobipBaseUrl: string;
   infobipApiKey: string;
   apiUrl: string;
@@ -52,11 +56,6 @@ export function getRuntimeConfig(): RuntimeConfig {
   return {
     supabaseUrl: local.supabaseUrl || readEnv("VITE_SUPABASE_URL"),
     supabaseAnonKey: local.supabaseAnonKey || readEnv("VITE_SUPABASE_ANON_KEY"),
-    groqApiKey: local.groqApiKey || readEnv("VITE_GROQ_API_KEY"),
-    googleApiKey: local.googleApiKey || readEnv("VITE_GOOGLE_API_KEY"),
-    firebaseProjectId: local.firebaseProjectId || readEnv("VITE_FIREBASE_PROJECT_ID"),
-    firebaseAppId: local.firebaseAppId || readEnv("VITE_FIREBASE_APP_ID"),
-    firebaseMessagingSenderId: local.firebaseMessagingSenderId || readEnv("VITE_FIREBASE_MESSAGING_SENDER_ID"),
     infobipBaseUrl: local.infobipBaseUrl || readEnv("VITE_INFOBIP_BASE_URL"),
     infobipApiKey: local.infobipApiKey || readEnv("VITE_INFOBIP_API_KEY"),
     apiUrl: local.apiUrl || readEnv("VITE_API_URL"),
@@ -85,16 +84,8 @@ export function clearRuntimeConfig(): void {
   window.dispatchEvent(new CustomEvent(RUNTIME_CONFIG_EVENT, { detail: getRuntimeConfig() }));
 }
 
-/** Convenience flags for UI. */
+/** Convenience flag for UI. */
 export function isSupabaseRuntimeReady(): boolean {
   const c = getRuntimeConfig();
   return Boolean(c.supabaseUrl && c.supabaseAnonKey);
-}
-
-export function isGroqRuntimeReady(): boolean {
-  return Boolean(getRuntimeConfig().groqApiKey);
-}
-
-export function isGoogleRuntimeReady(): boolean {
-  return Boolean(getRuntimeConfig().googleApiKey);
 }

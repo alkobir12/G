@@ -172,7 +172,7 @@ class PurchaseItem(BaseModel):
     part_id: Optional[str] = None
     name: str
     qty: int
-    cost: float
+    cost: float = 0   # default 0; the frontend may only fill `price`
     price: float
 
 class PurchaseModel(BaseModel):
