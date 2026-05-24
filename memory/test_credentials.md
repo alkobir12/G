@@ -1,58 +1,54 @@
-# Test Credentials — Parts Pro ERP
+# Parts Pro ERP — Test Credentials
 
-## App
-- **Preview URL:** `https://3cebdbec-b1df-4a4e-a3ea-d70221702bdc.preview.emergentagent.com`
-- **Backend API base:** `https://3cebdbec-b1df-4a4e-a3ea-d70221702bdc.preview.emergentagent.com/api`
-- **OpenAPI:** `https://3cebdbec-b1df-4a4e-a3ea-d70221702bdc.preview.emergentagent.com/api/openapi.json`
-- **Swagger UI:** `https://3cebdbec-b1df-4a4e-a3ea-d70221702bdc.preview.emergentagent.com/api/docs`
+## Real Supabase Auth (Phase 4.4)
 
-## Authentication
+These credentials work against the live backend `/api/auth/*` endpoints.
 
-**No server-side auth required.** The tester can interact directly with the UI or curl `/api/*`
-without any tokens, cookies, or session setup.
-
-### Frontend auto-login (localStorage shim)
-
-On first page load, `src/services/auth.ts` calls `setupDefaultAdmin()` which writes a default
-admin record to `localStorage` and signs in automatically:
-
-- **Email:** `admin@partspro.com`
-- **Password:** `admin123`
-- **Role:** `admin`
-
-No network call is made — this is entirely browser-side. To test the logged-out state, the
-tester can run `localStorage.clear()` in DevTools and reload (the page will show a "تسجيل
-الدخول" button in the top-right). After login the same `admin@partspro.com` / `admin123` works
-again (the credentials are stored in `localStorage["pp_users"]`).
-
-### Backend auth
-
-**None.** All `/api/*` endpoints are public. No cookies, no JWTs, no `Authorization` header.
-
-## Service status (as of this snapshot)
-
-| Service | Status |
+| Field | Value |
 |---|---|
-| `SUPABASE_URL` + `SUPABASE_KEY` (backend `.env`) | ✅ configured |
-| `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` (frontend `.env`) | ✅ configured |
-| `VITE_GROQ_API_KEY` | ✅ configured |
-| `VITE_GOOGLE_API_KEY` | ✅ configured |
-| `VITE_FIREBASE_*` | ❌ intentionally empty (Firestore sync disabled) |
-| `VITE_INFOBIP_*` | ❌ intentionally empty (SMS/WA disabled) |
-| Supabase schema (`parts`, `invoices`, `customers`, ...) | ❌ **pending** — user must run `/app/backend/migration_v2.sql` once in Supabase SQL editor |
+| Email | `rakan.phase4.1779661866@gmail.com` |
+| Password | `Phase4Test!2026` |
+| Role | admin |
+| Confirmed | yes (email_confirmed_at set via SQL because SUPABASE_SERVICE_KEY is not configured) |
 
-## Expected behavior of API calls right now
+### Manual confirmation workaround (until SUPABASE_SERVICE_KEY is added)
 
-- `GET /api/openapi.json` → 200
-- `GET /api/parts` → **500** with `postgrest.exceptions.APIError: 'Could not find the table public.parts in the schema cache'` (PGRST205). This is **expected** — it confirms the Supabase connection works and the only missing piece is the schema.
-- After running `migration_v2.sql` once, `GET /api/parts` will return `200` with `[]`.
+The backend exposes `POST /api/auth/signup?auto_confirm=true` but auto-confirm
+requires `SUPABASE_SERVICE_KEY` in `/app/backend/.env`. Without it, signups go
+through Supabase's default email-confirmation flow, and the user cannot log in
+until they click the link in their inbox.
 
-## Notes for the tester
+For local testing, confirm a user manually:
 
-- The "إعدادات قاعدة البيانات غير مكتملة" amber banner is now hidden (Supabase URL+key are set).
-- A small `Supabase` status pill is shown in the top-right of the header; until the schema is
-  migrated, it may show an "amber" `tables_missing` state.
-- Runtime config from the Settings page **overrides** env values. Test order: localStorage →
-  `.env`. Saving via Settings persists across reload (localStorage). Clearing via Settings →
-  "مسح الكل" reverts to env-only.
-- Supabase project ref: `uifvnppwgbxaqmorwgky` — for visibility in DB error messages.
+```sql
+UPDATE auth.users
+SET email_confirmed_at = now()
+WHERE email = '<test_email>';
+```
+
+(Use the pooler connection string from `/app/backend/.env` SUPABASE_URL host.)
+
+## Login flow notes
+
+- `POST /api/auth/login`  → `{ access_token, refresh_token, user }`
+- `GET  /api/auth/me`     with `Authorization: Bearer <jwt>` → `{ user }`
+- `POST /api/auth/refresh` with `{ refresh_token }` → new `{ access_token, refresh_token }`
+- `POST /api/auth/logout`  with `Authorization: Bearer <jwt>` → 200
+
+The frontend stores tokens at:
+
+- `localStorage["partspro_jwt"]`
+- `localStorage["partspro_refresh"]`
+- `localStorage["partspro_user"]`
+- `localStorage["parts_pro_role"]`
+
+`axios` request interceptor in `services/apiClient.ts` adds the Bearer
+header automatically; on 401 it attempts a single refresh + retry. If the
+refresh fails, all auth keys are cleared and `pp_auth_event SIGNED_OUT`
+is dispatched.
+
+## Legacy / Removed
+
+- The previous local `admin@partspro.com / admin123` auto-login shim has been
+  removed. `setupDefaultAdmin()` is a no-op stub kept only for backwards
+  compatibility of imports.

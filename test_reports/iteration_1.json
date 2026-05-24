@@ -1,0 +1,45 @@
+{
+  "summary": "Phase 4 closeout regression — backend-only. Ran 26 pytest cases against /api covering auth proxy (login/me/refresh/logout/signup with rate-limit handling), inventory-movements list (v5 migration), parts CRUD with supplier_id round-trip (v6 migration), wipe-all + sync zero-counts, journal side-effects for invoice/expense/purchase (Phase 4.6 double-entry), and smoke CRUD for suppliers/customers/expenses/purchases/accounts. All 26 tests passed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "/api/auth/signup?auto_confirm=true",
+        "issue": "Without SUPABASE_SERVICE_KEY auto_confirm cannot be honored — Supabase falls back to email-confirm flow and the project's default SMTP returns 429 'over_email_send_rate_limit'. Backend proxy correctly forwards the upstream status; this is an env-configuration limitation, not a code bug. Test accepts 200 or 429 as documented."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_phase4_backend.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional) Add SUPABASE_SERVICE_KEY to /app/backend/.env so /api/auth/signup?auto_confirm=true can issue users that can log in immediately — required for E2E signup→login automation.",
+    "(Optional) Wipe-all currently skips the journal_entries and inventory_movements tables — TEST_-prefixed entries accumulate. Consider adding both to WIPE_TABLES or expose a separate /api/admin/wipe-ledger endpoint."
+  ],
+  "critical_code_review_comments": [
+    "main.py is 1072 lines and contains every CRUD endpoint + helpers + journal hook + wipe + analytics. Above the 700-line threshold — split into routers/parts.py, routers/invoices.py, routers/inventory.py, routers/admin.py for maintainability.",
+    "wipe-all endpoint has no auth dependency (no Depends(bearer_user)). It can permanently wipe all business data with a single unauthenticated POST. This is a major production risk even with 'soft mode' caveat.",
+    "Inventory side-effects on POST /api/invoices (stock decrement) and journal upserts are not in a DB transaction — partial failure leaves the system in an inconsistent state. Consider wrapping in a Postgres RPC or compensating-write pattern.",
+    "routers/inventory_movements.py and routers/journal.py both do a late `from main import get_supabase` inside _supabase(). Functional but creates a circular import smell — lift get_supabase into a dedicated dependencies module.",
+    "/api/auth/logout currently calls bearer_user (validates JWT) but never actually invalidates the refresh token at Supabase — comment says it does but the body just returns {success: true}. Either call POST /auth/v1/logout upstream or update the comment.",
+    "/api/parts list with low_stock=true fetches all rows then filters in Python — acknowledged in code comment but will become O(N) hot path; consider adding a Postgres view or RPC.",
+    "PartModel.supplier_id is Optional[str] with no FK validation at the API layer — caller could send an arbitrary string. Acceptable for soft-mode, but document or validate."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_phase4_backend.py",
+    "/app/backend/tests/__init__.py"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "n/a (out of scope)"},
+  "test_credentials": "admin: rakan.phase4.1779661866@gmail.com / Phase4Test!2026 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "Each test creates TEST_-prefixed rows and best-effort cleans them in teardown_module. Journal entries (JE-INV-*, JE-EXP-*, JE-PUR-*) and inventory_movements rows are NOT cleaned because wipe-all does not include those tables.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite lives at /app/backend/tests/test_phase4_backend.py and finishes in ~20s with 26 passing tests. To re-run: `cd /app/backend && python -m pytest tests/test_phase4_backend.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml`. Login token TTL is 1h — re-run from scratch if tests are stale. Auth signup test tolerates 429 (Supabase SMTP rate-limit) until SUPABASE_SERVICE_KEY is added. Frontend was not tested in this round.",
+  "rca of the issue": "n/a — no regressions found."
+}

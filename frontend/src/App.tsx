@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import {
   LayoutDashboard, Package2, Receipt, Users, BarChart3,
   Plus, Pencil, Trash2, X, Search, AlertTriangle, Printer,
@@ -30,13 +30,14 @@ import {
 import {
   signIn, signUp, signOut,
   onAuthChange, canDelete, canViewPage,
-  initAuth, cacheRole, setupDefaultAdmin, getDefaultAdmin,
+  initAuth, cacheRole,
   type UserRole,
 } from "./services/auth";
 import AuthModal, { type RegisterData } from "./components/AuthModal";
 import RuntimeConfigSettings from "./components/RuntimeConfigSettings";
 import OnlineIndicator from "./components/OnlineIndicator";
 import DataManagementPanel from "./components/DataManagementPanel";
+import ErrorBoundary from "./components/ErrorBoundary";
 import LowStockBadge from "./components/LowStockBadge";
 import { isSupabaseRuntimeReady, RUNTIME_CONFIG_EVENT } from "./services/runtimeConfig";
 import { backendFetchAll, backendSyncAll, apiDelete, pingBackend } from "./services/apiClient";
@@ -50,6 +51,7 @@ import {
   validatePart, validateSupplier, validateCustomer,
   validateInvoice, validateExpense,
 } from "./lib/validation";
+import { sanitizeText, sanitizeIdentifier } from "./lib/sanitize";
 import {
   createSaleJournal, createPurchaseJournal, createExpenseJournal,
   validateBatch,
@@ -523,59 +525,58 @@ const markInitialized = () => {
 export default function App() {
   const { toasts, addToast, dismiss } = useToast();
 
-  // Data state (with localStorage persistence)
-  const firstVisit = isFirstVisit();
+  // ── Phase 4.2: empty initializers. Real data is hydrated from backend in the
+  // bootstrap effect below. Seed arrays are kept available for the explicit
+  // "Load demo data" button in the Data Management panel only.
   const saved = loadData();
-  const [parts, setParts] = useState<Part[]>(firstVisit ? [...MITSUBISHI_PARTS, ...INVOICE_PARTS] : (saved?.parts ?? []));
-  const [suppliers, setSuppliers] = useState<Supplier[]>(firstVisit ? SEED_SUPPLIERS : (saved?.suppliers ?? []));
-  const [customers, setCustomers] = useState<Customer[]>(firstVisit ? SEED_CUSTOMERS : (saved?.customers ?? []));
-  const [invoices, setInvoices] = useState<Invoice[]>(firstVisit ? SEED_INVOICES : (saved?.invoices ?? []));
-  const [purchases, setPurchases] = useState<Purchase[]>(firstVisit ? SEED_PURCHASES : (saved?.purchases ?? []));
-  const [expenses, setExpenses] = useState<Expense[]>(firstVisit ? SEED_EXPENSES : (saved?.expenses ?? []));
-  const [accounts, setAccounts] = useState<Account[]>(firstVisit ? SEED_ACCOUNTS : (saved?.accounts ?? []));
+  const [parts, setParts] = useState<Part[]>(saved?.parts ?? []);
+  const [suppliers, setSuppliers] = useState<Supplier[]>(saved?.suppliers ?? []);
+  const [customers, setCustomers] = useState<Customer[]>(saved?.customers ?? []);
+  const [invoices, setInvoices] = useState<Invoice[]>(saved?.invoices ?? []);
+  const [purchases, setPurchases] = useState<Purchase[]>(saved?.purchases ?? []);
+  const [expenses, setExpenses] = useState<Expense[]>(saved?.expenses ?? []);
+  const [accounts, setAccounts] = useState<Account[]>(saved?.accounts ?? []);
   const [priceHistory] = useState<PriceHistory[]>(SEED_PRICE_HISTORY);
-  const [_journal] = useState<JournalEntry[]>(SEED_JOURNAL);
-  const [settings, setSettings] = useState<AppSettings>(firstVisit ? DEFAULT_SETTINGS : (saved?.settings ?? DEFAULT_SETTINGS));
+  const [settings, setSettings] = useState<AppSettings>(saved?.settings ?? DEFAULT_SETTINGS);
 
-  // Mark as initialized on first mount (useEffect, NOT useState!)
+  // booted gate — auto-sync to backend stays disabled until the bootstrap
+  // hydration completes, so we never POST an empty payload that wipes the
+  // server right after page load (Phase 4.2 fix).
+  const [booted, setBooted] = useState<boolean>(false);
+  const bootstrapDone = useRef(false);
+
+  // Mark visit as initialized (kept for any legacy code that reads INIT_KEY).
   useEffect(() => {
-    if (isFirstVisit()) {
-      markInitialized();
-      // Also save seed data immediately so loadData picks it up on refresh
-      const seedData = { parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(seedData));
-    }
+    if (isFirstVisit()) markInitialized();
   }, []);
 
-  // ── Auth initialization ──
+  // ── Auth initialization (Phase 4.4: real backend auth) ──
   useEffect(() => {
-    // Step 1: Ensure default admin exists (auto-login if first visit)
-    const isFirstAdmin = setupDefaultAdmin();
-    if (isFirstAdmin) {
-      // First visit — default admin auto-logged in
-      const admin = getDefaultAdmin();
-      setUser({ email: admin.email, full_name: admin.name });
-      setUserRole("admin");
+    // Validate the cached JWT against the backend. If valid, hydrate user
+    // state. Otherwise open the login modal — the UI stays interactive
+    // (data calls will be unauthenticated for now while RLS is off).
+    initAuth().then(({ authenticated, profile }) => {
+      if (authenticated && profile) {
+        setUser(profile);
+        setUserRole(profile.role);
+      } else {
+        setUser(null);
+        setUserRole(null);
+        setAuthOpen(true);
+      }
       setAuthLoading(false);
-    } else {
-      // Subsequent visit — check existing session
-      initAuth().then(({ authenticated, profile }) => {
-        if (authenticated && profile) {
-          setUser(profile);
-          setUserRole(profile.role);
-        }
-        setAuthLoading(false);
-      });
-    }
+    });
 
-    // Listen to auth state changes
+    // Listen to auth state changes (login/logout from any component).
     const unsub = onAuthChange((event, profile) => {
       if (event === "SIGNED_IN" && profile) {
         setUser(profile);
         setUserRole(profile.role);
+        setAuthOpen(false);
       } else if (event === "SIGNED_OUT") {
         setUser(null);
         setUserRole(null);
+        setAuthOpen(true);
       }
     });
     return unsub;
@@ -598,7 +599,8 @@ export default function App() {
   const [_authLoading, setAuthLoading] = useState(true);
 
   // ═══ Journal State ═══
-  const [journal, setJournal] = useState<JournalEntry[]>(firstVisit ? SEED_JOURNAL : (saved?.journal ?? SEED_JOURNAL));
+  // Phase 4.2: start empty; the backend's journal_entries table is the source of truth.
+  const [journal, setJournal] = useState<JournalEntry[]>(saved?.journal ?? []);
 
   // ═══ Firestore Real-time Sync ═══ (DISABLED per user — Firebase off)
   // TODO: Firebase disabled per user decision — re-enable by uncommenting the block below.
@@ -629,52 +631,53 @@ export default function App() {
   const [supabaseStatus, setSupabaseStatus] = useState<"checking" | "connected" | "disconnected" | "tables_missing">("checking");
   const [syncing, setSyncing] = useState(false);
 
-  // ── Boot: fetch all data from FastAPI backend (which talks to Supabase) ──
+  // ── Phase 4.2 Boot: fetch all data from FastAPI backend (which talks to
+  // Supabase). The bootstrapDone ref guards against React 19 StrictMode's
+  // double-invocation so seeds never resurrect after a wipe + reload.
   useEffect(() => {
+    if (bootstrapDone.current) return;
+    bootstrapDone.current = true;
     let cancelled = false;
     pingBackend().then((ok) => {
       if (cancelled) return;
-      if (!ok) { setSupabaseStatus("disconnected"); return; }
+      if (!ok) {
+        setSupabaseStatus("disconnected");
+        setBooted(true);   // unblock UI so the user can see the offline banner
+        return;
+      }
       backendFetchAll().then((result) => {
         if (cancelled) return;
         setSupabaseStatus("connected");
-        const local = loadData();
-        const hasLocalData = local && (
-          (local.parts && local.parts.length > 0) ||
-          (local.suppliers && local.suppliers.length > 0) ||
-          (local.invoices && local.invoices.length > 0)
-        );
-        // Prefer backend data on every boot — localStorage is offline cache only.
-        // Only fall back to local if the backend returns empty AND we have something cached.
-        const anyBackendData =
-          (result.parts && result.parts.length > 0) ||
-          (result.invoices && result.invoices.length > 0) ||
-          (result.customers && result.customers.length > 0) ||
-          (result.suppliers && result.suppliers.length > 0);
-        if (anyBackendData) {
-          if (result.parts) setParts((result.parts as any[]).map(partFromBackend) as any);
-          if (result.suppliers) setSuppliers((result.suppliers as any[]).map(supplierFromBackend) as any);
-          if (result.customers) setCustomers((result.customers as any[]).map(customerFromBackend) as any);
-          if (result.invoices) setInvoices((result.invoices as any[]).map(invoiceFromBackend) as any);
-          if (result.purchases) setPurchases((result.purchases as any[]).map(purchaseFromBackend) as any);
-          if (result.expenses) setExpenses((result.expenses as any[]).map(expenseFromBackend) as any);
-          if (result.accounts) setAccounts((result.accounts as any[]).map(accountFromBackend) as any);
-          if (result.settings && Array.isArray(result.settings) && result.settings.length > 0) {
-            setSettings(settingsFromBackend(result.settings[0]) as any);
-          }
-        } else if (!hasLocalData) {
-          // backend empty + cache empty → leave the seed defaults already in state
+        // Backend is the single source of truth. Hydrate every entity —
+        // even when the backend returns an empty array (post-wipe), we
+        // mirror that emptiness into local state. NEVER fall back to seed.
+        setParts((result.parts || []).map(partFromBackend) as any);
+        setSuppliers((result.suppliers || []).map(supplierFromBackend) as any);
+        setCustomers((result.customers || []).map(customerFromBackend) as any);
+        setInvoices((result.invoices || []).map(invoiceFromBackend) as any);
+        setPurchases((result.purchases || []).map(purchaseFromBackend) as any);
+        setExpenses((result.expenses || []).map(expenseFromBackend) as any);
+        setAccounts((result.accounts || []).map(accountFromBackend) as any);
+        if (result.settings && Array.isArray(result.settings) && result.settings.length > 0) {
+          setSettings(settingsFromBackend(result.settings[0]) as any);
         }
+        setBooted(true);
       }).catch((err) => {
         console.warn("[boot] backend fetch failed:", err);
-        if (!cancelled) setSupabaseStatus("disconnected");
+        if (!cancelled) {
+          setSupabaseStatus("disconnected");
+          setBooted(true);  // unblock UI even on error
+        }
       });
     });
     return () => { cancelled = true; };
   }, []);
 
   // ── Auto-sync to backend (debounced 3s after last change) ──
+  // Phase 4.2: gated on `booted` so the first render's empty arrays don't
+  // wipe the server during the brief window before hydration finishes.
   useEffect(() => {
+    if (!booted) return;
     if (supabaseStatus !== "connected" || syncing) return;
     const timeout = setTimeout(() => {
       const payload = {
@@ -694,13 +697,16 @@ export default function App() {
       });
     }, 3000);
     return () => clearTimeout(timeout);
-  }, [parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings, supabaseStatus, syncing]);
+  }, [booted, parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings, supabaseStatus, syncing]);
 
-  // Persist all data to localStorage
+  // Persist all data to localStorage (offline cache).
+  // Phase 4.2: gated on `booted` so we don't overwrite the cache with empty
+  // arrays before backend hydration completes.
   useEffect(() => {
+    if (!booted) return;
     const data = { parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }, [parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings]);
+  }, [booted, parts, suppliers, customers, invoices, purchases, expenses, accounts, journal, settings]);
 
 
   // ═══════════════════════════════════════════════════════════════
@@ -741,7 +747,45 @@ export default function App() {
   // HANDLERS
   // ═══════════════════════════════════════════════════════════════
 
-  const handleSavePart = (p: Part) => {
+  // Phase 4.1: strip HTML/script tags from every free-text field before
+  // persistence. Numbers and enums are left untouched.
+  const sanitizePart = (p: Part): Part => ({
+    ...p,
+    id: sanitizeIdentifier(p.id),
+    oem: sanitizeIdentifier(p.oem),
+    name_ar: sanitizeText(p.name_ar, 200),
+    brand: sanitizeText(p.brand, 80),
+    category: sanitizeText(p.category, 80),
+    model: sanitizeText(p.model, 120),
+    location: sanitizeText(p.location, 120),
+  });
+  const sanitizeSupplierObj = (s: Supplier): Supplier => ({
+    ...s,
+    id: sanitizeIdentifier(s.id),
+    name: sanitizeText(s.name, 120),
+    contact: sanitizeText(s.contact, 120),
+    phone: sanitizeIdentifier(s.phone, 32),
+    city: sanitizeText(s.city, 80),
+  });
+  const sanitizeCustomerObj = (c: Customer): Customer => ({
+    ...c,
+    id: sanitizeIdentifier(c.id),
+    name: sanitizeText(c.name, 120),
+    phone: sanitizeIdentifier(c.phone, 32),
+    email: sanitizeIdentifier(c.email, 200),
+    address: sanitizeText(c.address, 250),
+  });
+  const sanitizeExpenseObj = (e: Expense): Expense => ({
+    ...e,
+    id: sanitizeIdentifier(e.id),
+    category: sanitizeText(e.category, 80),
+    description: sanitizeText(e.description, 500),
+    reason: e.reason !== undefined ? sanitizeText(e.reason, 250) : e.reason,
+    party: e.party !== undefined ? sanitizeText(e.party, 120) : e.party,
+  });
+
+  const handleSavePart = (raw: Part) => {
+    const p = sanitizePart(raw);
     const result = validatePart(p);
     if (!result.success) {
       addToast(result.errors[0], "error");
@@ -761,7 +805,8 @@ export default function App() {
     setDeleteConfirm({ type: "part", id, name: p?.name_ar || id });
   };
 
-  const handleSaveSupplier = (s: Supplier) => {
+  const handleSaveSupplier = (raw: Supplier) => {
+    const s = sanitizeSupplierObj(raw);
     const result = validateSupplier(s);
     if (!result.success) {
       addToast(result.errors[0], "error");
@@ -781,7 +826,8 @@ export default function App() {
     setDeleteConfirm({ type: "supplier", id, name: s?.name || id });
   };
 
-  const handleSaveCustomer = (c: Customer) => {
+  const handleSaveCustomer = (raw: Customer) => {
+    const c = sanitizeCustomerObj(raw);
     const result = validateCustomer(c);
     if (!result.success) {
       addToast(result.errors[0], "error");
@@ -801,7 +847,8 @@ export default function App() {
     setDeleteConfirm({ type: "customer", id, name: c?.name || id });
   };
 
-  const handleSaveExpense = (e: Expense) => {
+  const handleSaveExpense = (raw: Expense) => {
+    const e = sanitizeExpenseObj(raw);
     const result = validateExpense(e);
     if (!result.success) {
       addToast(result.errors[0], "error");
@@ -2217,7 +2264,8 @@ export default function App() {
     // but we clear here too for immediate UI response.
     setUser(null);
     setUserRole(null);
-    addToast("تم تسجيل الخروج — سجل الدخول كـ admin@partspro.com / admin123", "info");
+    setAuthOpen(true);
+    addToast("تم تسجيل الخروج", "info");
   };
 
   // ═══════════════════════════════════════════════════════════════
@@ -2587,19 +2635,21 @@ export default function App() {
                 </button>
               </div>
             )}
-            {page === "dashboard" && <DashboardView />}
-            {page === "inventory" && <InventoryView />}
-            {page === "pos" && <POSView />}
-            {page === "customers" && <CustomersView />}
-            {page === "transactions" && <TransactionsView />}
-            {page === "accounts" && <AccountsView />}
+            {page === "dashboard" && <ErrorBoundary label="الرئيسية"><DashboardView /></ErrorBoundary>}
+            {page === "inventory" && <ErrorBoundary label="المخزون"><InventoryView /></ErrorBoundary>}
+            {page === "pos" && <ErrorBoundary label="نقاط البيع"><POSView /></ErrorBoundary>}
+            {page === "customers" && <ErrorBoundary label="العملاء"><CustomersView /></ErrorBoundary>}
+            {page === "transactions" && <ErrorBoundary label="الحركات"><TransactionsView /></ErrorBoundary>}
+            {page === "accounts" && <ErrorBoundary label="الحسابات"><AccountsView /></ErrorBoundary>}
             {page === "analytics" && (
-              <div className="space-y-4">
-                <RakanAnalytics parts={parts} invoices={invoices} purchases={purchases} expenses={expenses} priceHistory={priceHistory} accounts={accounts} settings={settings} />
-                <AnalyticsDashboard parts={parts} suppliers={suppliers} purchases={purchases} expenses={expenses} onNavigate={(p: string) => setPage(p as Page)} />
-              </div>
+              <ErrorBoundary label="التحليلات">
+                <div className="space-y-4">
+                  <RakanAnalytics parts={parts} invoices={invoices} purchases={purchases} expenses={expenses} priceHistory={priceHistory} accounts={accounts} settings={settings} />
+                  <AnalyticsDashboard parts={parts} suppliers={suppliers} purchases={purchases} expenses={expenses} onNavigate={(p: string) => setPage(p as Page)} />
+                </div>
+              </ErrorBoundary>
             )}
-            {page === "settings" && <SettingsView />}
+            {page === "settings" && <ErrorBoundary label="الإعدادات"><SettingsView /></ErrorBoundary>}
           </div>
         
         </main>

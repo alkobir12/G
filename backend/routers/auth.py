@@ -94,6 +94,24 @@ async def login(req: LoginRequest):
         return data
 
 
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post("/refresh")
+async def refresh(req: RefreshRequest):
+    """Exchange a refresh_token for a fresh access_token + refresh_token pair."""
+    _require_supabase()
+    url = _auth_url("/token?grant_type=refresh_token")
+    headers = {"apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json"}
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(url, headers=headers, json={"refresh_token": req.refresh_token})
+        data = r.json()
+        if r.status_code >= 400:
+            raise HTTPException(status_code=r.status_code, detail=data)
+        return data
+
+
 async def _get_user_from_token(token: str) -> dict:
     _require_supabase()
     url = _auth_url("/user")

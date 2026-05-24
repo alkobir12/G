@@ -1,18 +1,23 @@
 // ═══════════════════════════════════════════════════════════════
 //   apiClient.ts — Single axios instance for the FastAPI backend
+//   Phase 4.4: attach `Authorization: Bearer <jwt>` from localStorage
+//   and transparently refresh tokens on 401.
 // ═══════════════════════════════════════════════════════════════
-import axios, { AxiosError } from "axios";
+import axios from "axios";
+import type { AxiosError, AxiosRequestConfig } from "axios";
 import { getRuntimeConfig } from "./runtimeConfig";
 
+const KEY_JWT     = "partspro_jwt";
+const KEY_REFRESH = "partspro_refresh";
+const KEY_USER    = "partspro_user";
+const KEY_ROLE    = "parts_pro_role";
+
 function resolveBaseUrl(): string {
-  // 1. runtime config (localStorage / Settings page)
   const rc = getRuntimeConfig().apiUrl;
   if (rc) return rc.replace(/\/+$/, "");
-  // 2. Vite env
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const env = (import.meta as any).env?.VITE_API_URL || "";
   if (env) return env.replace(/\/+$/, "");
-  // 3. same-origin fallback (works when backend is co-hosted under /api/)
   if (typeof window !== "undefined") return window.location.origin;
   return "";
 }
@@ -23,11 +28,65 @@ export const apiClient = axios.create({
   headers: { "X-Client": "partspro-web" },
 });
 
+// ── Request interceptor: refresh baseURL + attach JWT ──
 apiClient.interceptors.request.use((config) => {
-  // Refresh baseURL in case runtime config changed (cheap; just a string read)
   config.baseURL = resolveBaseUrl();
+  try {
+    const jwt = localStorage.getItem(KEY_JWT);
+    if (jwt) {
+      config.headers = config.headers || {};
+      (config.headers as Record<string, string>).Authorization = `Bearer ${jwt}`;
+    }
+  } catch { /* ignore */ }
   return config;
 });
+
+// ── Response interceptor: refresh on 401, retry once ──
+// Auth endpoints are excluded from the refresh loop to avoid infinite recursion.
+let refreshInFlight: Promise<string | null> | null = null;
+
+async function tryRefresh(): Promise<string | null> {
+  const refresh = localStorage.getItem(KEY_REFRESH);
+  if (!refresh) return null;
+  try {
+    const res = await axios.post(`${resolveBaseUrl()}/api/auth/refresh`, { refresh_token: refresh }, {
+      timeout: 10_000,
+      headers: { "X-Client": "partspro-web" },
+    });
+    const data = res.data as { access_token?: string; refresh_token?: string };
+    if (data?.access_token) {
+      localStorage.setItem(KEY_JWT, data.access_token);
+      if (data.refresh_token) localStorage.setItem(KEY_REFRESH, data.refresh_token);
+      return data.access_token;
+    }
+  } catch { /* fall through */ }
+  // refresh failed — clear session
+  localStorage.removeItem(KEY_JWT);
+  localStorage.removeItem(KEY_REFRESH);
+  localStorage.removeItem(KEY_USER);
+  localStorage.removeItem(KEY_ROLE);
+  try { window.dispatchEvent(new CustomEvent("pp_auth_event", { detail: { event: "SIGNED_OUT", profile: null } })); } catch { /* ignore */ }
+  return null;
+}
+
+apiClient.interceptors.response.use(
+  (r) => r,
+  async (error: AxiosError) => {
+    const original = error.config as AxiosRequestConfig & { _retry?: boolean } | undefined;
+    const url = (original?.url || "").toString();
+    const isAuthPath = url.includes("/api/auth/");
+    if (error.response?.status !== 401 || !original || original._retry || isAuthPath) {
+      return Promise.reject(error);
+    }
+    original._retry = true;
+    if (!refreshInFlight) refreshInFlight = tryRefresh().finally(() => { refreshInFlight = null; });
+    const newToken = await refreshInFlight;
+    if (!newToken) return Promise.reject(error);
+    original.headers = original.headers || {};
+    (original.headers as Record<string, string>).Authorization = `Bearer ${newToken}`;
+    return apiClient.request(original);
+  },
+);
 
 export interface ApiError extends Error {
   status?: number;
@@ -36,7 +95,6 @@ export interface ApiError extends Error {
 }
 
 function unwrap<T>(payload: unknown): T {
-  // Backend convention: lists/objects are wrapped in { data: ... }
   if (payload && typeof payload === "object" && "data" in (payload as Record<string, unknown>)) {
     return (payload as { data: T }).data;
   }
@@ -97,7 +155,7 @@ export async function apiDelete<T = { success: boolean; id?: string }>(path: str
   }
 }
 
-/** Health check: returns true if backend reachable + Supabase configured. */
+/** Health check: returns true if backend reachable. */
 export async function pingBackend(): Promise<boolean> {
   try {
     await apiClient.get("/api/health", { timeout: 5000 });
@@ -107,7 +165,6 @@ export async function pingBackend(): Promise<boolean> {
   }
 }
 
-/** GET /api/sync — bulk fetch of all entities. */
 export async function backendFetchAll(): Promise<Record<string, any[]>> {
   try {
     const res = await apiClient.get("/api/sync", { timeout: 30_000 });
@@ -117,7 +174,6 @@ export async function backendFetchAll(): Promise<Record<string, any[]>> {
   }
 }
 
-/** POST /api/sync — bulk upsert. Body shape matches SyncRequest in backend/main.py. */
 export async function backendSyncAll(payload: Record<string, any[]>): Promise<{ success: boolean; errors: string[] }> {
   try {
     const res = await apiClient.post("/api/sync", payload, { timeout: 60_000 });
