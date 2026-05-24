@@ -6,8 +6,7 @@ import {
   DollarSign, Pencil, Trash2, Printer, BarChart3, Building2, List,
   Calendar, Package, User, Truck, Plus,
 } from "lucide-react";
-
-const fmt = (n: number) => (n || 0).toLocaleString("ar-SA", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+import { fmt, fmtInt } from "../lib/format";
 
 interface Purchase {
   id: string; date: string; supplier?: string; supplier_name?: string;
@@ -56,8 +55,16 @@ export default function TransactionsCards({
     if (kind === "purchase") onDeletePurchase?.(id);
     else onDeleteExpense?.(id);
   };
+  // Aliases the embedded body expects:
+  const handleDeletePurchase = (id: string) => onDeletePurchase?.(id);
+  const handleDeleteExpense = (id: string) => onDeleteExpense?.(id);
   const handleEditPurchase = onEditPurchase || (() => {});
   const handleEditExpense = onEditExpense || (() => {});
+  // Printer button — open a browser print dialog of the current view as a
+  // lightweight fallback until a dedicated PDF generator lands in Phase 5.
+  const setPrintInvoice = (_payload: any) => {
+    try { window.print(); } catch {}
+  };
 
     const [txTab, setTxTab] = useState<"all" | "purchases" | "expenses">("all");
     const [search, setSearch] = useState("");
