@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from "react";
 import {
   LayoutDashboard, Package2, Receipt, Users, BarChart3,
   Plus, Pencil, Trash2, X, Search, AlertTriangle, Printer,
@@ -38,9 +38,13 @@ import RuntimeConfigSettings from "./components/RuntimeConfigSettings";
 import OnlineIndicator from "./components/OnlineIndicator";
 import DataManagementPanel from "./components/DataManagementPanel";
 import ErrorBoundary from "./components/ErrorBoundary";
+
+// Phase 5: PDF/image/Excel stock-adjust import is lazy-loaded because
+// tesseract.js + pdfjs together add ~3MB to the bundle.
+const StockImportPanel = lazy(() => import("./components/StockImportPanel"));
 import LowStockBadge from "./components/LowStockBadge";
 import { isSupabaseRuntimeReady, RUNTIME_CONFIG_EVENT } from "./services/runtimeConfig";
-import { backendFetchAll, backendSyncAll, apiDelete, pingBackend } from "./services/apiClient";
+import { backendFetchAll, backendSyncAll, apiDelete, apiPost, pingBackend } from "./services/apiClient";
 import {
   partFromBackend, customerFromBackend, supplierFromBackend, invoiceFromBackend,
   purchaseFromBackend, expenseFromBackend, accountFromBackend, settingsFromBackend,
@@ -1498,7 +1502,7 @@ export default function App() {
   // ═══════════════════════════════════════════════════════════════
 
   function POSView() {
-    const [posTab, setPosTab] = useState<"sell" | "buy" | "adjust">("sell");
+    const [posTab, setPosTab] = useState<"sell" | "buy" | "adjust" | "import">("sell");
     const [cart, setCart] = useState<{ part: Part; qty: number }[]>([]);
     const [buyCart, setBuyCart] = useState<{ part: Part; qty: number; buyPrice: number }[]>([]);
     const [adjustInputs, setAdjustInputs] = useState<Record<string, number>>({});
@@ -1510,6 +1514,15 @@ export default function App() {
     const [selCat, setSelCat] = useState<string>("الكل");
     const [sellPaymentMethod, setSellPaymentMethod] = useState("نقدي");
     const [cartOpen, setCartOpen] = useState(false);
+
+    // Feature 2: 3-mode customer selection on the sell tab.
+    //   quick    → instant cash sale ("زبون نقدي")
+    //   existing → searchable Combobox over `customers`
+    //   new      → inline mini-form (name + phone) that creates the customer
+    const [customerMode, setCustomerMode] = useState<"quick" | "existing" | "new">("quick");
+    const [newCustomerName, setNewCustomerName] = useState("");
+    const [newCustomerPhone, setNewCustomerPhone] = useState("");
+    const [creatingCustomer, setCreatingCustomer] = useState(false);
 
     const productCategories = useMemo(() => {
       return ["الكل", ...Array.from(new Set(parts.map((p) => p.category)))];
@@ -1537,18 +1550,48 @@ export default function App() {
       setBuyCart((prev) => { const existing = prev.find((c) => c.part.id === p.id); if (existing) return prev.map((c) => c.part.id === p.id ? { ...c, qty: c.qty + 1 } : c); return [...prev, { part: p, qty: 1, buyPrice: p.cost || p.price * 0.6 }]; });
     };
 
-    const checkout = () => {
+    const checkout = async () => {
       if (cart.length === 0) return;
+
+      // ── Feature 2: resolve customer based on mode ──
+      let customerName = "زبون نقدي";
+      let customerPhone = "";
+      let customerId: string | null = null;
+
+      if (customerMode === "existing" && selCustomer !== "walk-in") {
+        const c = customers.find((x) => x.id === selCustomer);
+        if (c) { customerName = c.name; customerPhone = c.phone || ""; customerId = c.id; }
+      } else if (customerMode === "new") {
+        const name = sanitizeText(newCustomerName, 120).trim();
+        const phone = sanitizeIdentifier(newCustomerPhone, 32).trim();
+        if (!name) { addToast("أدخل اسم العميل الجديد أولاً", "error"); return; }
+        setCreatingCustomer(true);
+        try {
+          const newCust: Customer = {
+            id: newId("CUS"), name, phone, email: "", address: "",
+            balance: 0, total_bought: 0, last_visit: today(),
+          };
+          // Persist locally + autosync will push to backend. We don't await
+          // the backend round-trip — POS must stay fast.
+          setCustomers((prev) => [...prev, newCust]);
+          customerName = newCust.name;
+          customerPhone = newCust.phone;
+          customerId = newCust.id;
+          addToast(`تم إضافة العميل: ${name}`, "success");
+        } finally {
+          setCreatingCustomer(false);
+        }
+      }
+
       const newInvoice: any = {
         id: newId("INV"), date: today(),
-        customer: selCustomer === "walk-in" ? "عميل نقدي" : customers.find((c) => c.id === selCustomer)?.name || "عميل نقدي",
-        phone: "",
+        customer: customerName,
+        phone: customerPhone,
         items: cart.map((c) => ({ part_id: c.part.id, name: c.part.name_ar, qty: c.qty, price: c.part.price, cost: c.part.cost })),
         subtotal: cartAfterDiscount, vat: vatAmt, total: finalTotal,
         payment: sellPaymentMethod, status: "مكتمل",
         type: "sell",
       };
-      // Validate invoice
       const validation = validateInvoice(newInvoice);
       if (!validation.success) {
         addToast(validation.errors[0], "error");
@@ -1556,10 +1599,9 @@ export default function App() {
       }
       setInvoices((prev) => [newInvoice, ...prev]);
       setParts((prev) => prev.map((p) => { const c = cart.find((x) => x.part.id === p.id); return c ? { ...p, stock: Math.max(0, p.stock - c.qty) } : p; }));
-      if (selCustomer !== "walk-in") {
-        setCustomers((prev) => prev.map((c) => c.id === selCustomer ? { ...c, total_bought: (c.total_bought || 0) + finalTotal, last_visit: today() } : c));
+      if (customerId) {
+        setCustomers((prev) => prev.map((c) => c.id === customerId ? { ...c, total_bought: (c.total_bought || 0) + finalTotal, last_visit: today() } : c));
       }
-      // Create journal entries for sale
       const saleJournals = createSaleJournal(newInvoice);
       if (saleJournals.length > 0) {
         const batchValid = validateBatch(saleJournals);
@@ -1573,7 +1615,10 @@ export default function App() {
       addToast(`تم إنشاء فاتورة #${newInvoice.id} بمبلغ ${fmt(finalTotal)}`, "success");
       setPrintInvoice(newInvoice);
       if (isSupabaseConfigured()) syncInvoice(newInvoice).catch(() => {});
-      setCart([]); setDiscount(0); setSellPaymentMethod("نقدي"); setSelCustomer("walk-in");
+      // Reset cart state — keep customer mode at "quick" so the next sale is also frictionless.
+      setCart([]); setDiscount(0); setSellPaymentMethod("نقدي");
+      setSelCustomer("walk-in"); setCustomerMode("quick");
+      setNewCustomerName(""); setNewCustomerPhone("");
     };
 
     const checkoutBuy = () => {
@@ -1614,8 +1659,9 @@ export default function App() {
             { key: "sell" as const, label: "بيع", icon: ShoppingCart },
             { key: "buy" as const, label: "شراء", icon: Truck },
             { key: "adjust" as const, label: "تسوية مخزون", icon: SlidersHorizontal },
+            { key: "import" as const, label: "استيراد", icon: Upload },
           ].map((t) => (
-            <button key={t.key} onClick={() => setPosTab(t.key)}
+            <button key={t.key} onClick={() => setPosTab(t.key)} data-testid={`pos-tab-${t.key}`}
               className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-lg text-sm font-bold transition-all ${posTab === t.key ? "bg-amber-500 text-white shadow-lg" : "text-slate-400 hover:text-slate-200"}`}>
               <t.icon className="w-4 h-4" /> {t.label}
             </button>
@@ -1665,7 +1711,52 @@ export default function App() {
                   {cart.length === 0 && <div className="text-center py-4 text-slate-500 text-xs">السلة فارغة</div>}
                 </div>
                 <div className="space-y-2 mt-3 pt-3 border-t border-white/10">
-                  <Select label="العميل" value={selCustomer} onChange={setSelCustomer} options={[{ value: "walk-in", label: "عميل نقدي" }, ...customers.map((c) => ({ value: c.id, label: c.name }))]} />
+                  {/* Phase 5 — 3-mode customer selection */}
+                  <div className="space-y-2" data-testid="pos-customer-section">
+                    <div className="flex gap-1 bg-white/5 p-1 rounded-lg">
+                      {[
+                        { key: "quick" as const, label: "بيع فوري" },
+                        { key: "existing" as const, label: "عميل موجود" },
+                        { key: "new" as const, label: "عميل جديد" },
+                      ].map((m) => (
+                        <button
+                          key={m.key}
+                          data-testid={`pos-customer-mode-${m.key}`}
+                          onClick={() => setCustomerMode(m.key)}
+                          className={`flex-1 px-2 py-1.5 rounded text-[11px] font-bold transition-all ${customerMode === m.key ? "bg-amber-500 text-white shadow" : "text-slate-400 hover:text-slate-200"}`}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                    {customerMode === "quick" && (
+                      <div data-testid="pos-customer-quick" className="flex items-center gap-2 px-2.5 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                        <UserCircle className="w-4 h-4 text-emerald-400" />
+                        <span className="text-xs text-emerald-300 font-bold">زبون نقدي</span>
+                        <span className="text-[10px] text-slate-500 mr-auto">بدون بيانات</span>
+                      </div>
+                    )}
+                    {customerMode === "existing" && (
+                      <Combobox
+                        label="ابحث بالاسم أو الجوال"
+                        value={selCustomer === "walk-in" ? "" : customers.find((c) => c.id === selCustomer)?.name || ""}
+                        onChange={(v) => {
+                          const matched = customers.find((c) => c.name === v || c.phone === v);
+                          setSelCustomer(matched ? matched.id : "walk-in");
+                        }}
+                        options={customers.map((c) => ({ value: c.name, label: `${c.name}${c.phone ? " — " + c.phone : ""}` }))}
+                        placeholder="مثال: أحمد أو 0501234567"
+                      />
+                    )}
+                    {customerMode === "new" && (
+                      <div className="space-y-1.5" data-testid="pos-customer-new">
+                        <Input label="اسم العميل" value={newCustomerName} onChange={setNewCustomerName} placeholder="مثال: محمد العتيبي" />
+                        <Input label="رقم الجوال" value={newCustomerPhone} onChange={setNewCustomerPhone} placeholder="05xxxxxxxx" type="tel" />
+                        <p className="text-[10px] text-slate-500">سيتم إضافته للعملاء وربطه بهذه الفاتورة.</p>
+                      </div>
+                    )}
+                  </div>
+
                   <Input label="الخصم" value={discount} onChange={(v) => setDiscount(Number(v))} type="number" min={0} />
                   <div className="flex justify-between text-xs text-slate-400"><span>المجموع:</span><span>{fmt(cartTotal)}</span></div>
                   {discount > 0 && <div className="flex justify-between text-xs text-rose-400"><span>الخصم:</span><span>-{fmt(discount)}</span></div>}
@@ -1849,7 +1940,39 @@ export default function App() {
           </div>
         )}
 
-        {/* POS simplified: sell, buy, adjust only */}
+        {posTab === "import" && (
+          <div className="space-y-4" data-testid="pos-import-tab">
+            <Suspense fallback={
+              <div className="flex items-center justify-center py-12 text-slate-400 text-sm gap-2">
+                <RefreshCw className="w-4 h-4 animate-spin" /> جارٍ تحميل محرك الاستيراد…
+              </div>
+            }>
+              <StockImportPanel
+                parts={parts.map((p) => ({ id: p.id, oem: p.oem, name_ar: p.name_ar, stock: p.stock }))}
+                addToast={addToast}
+                onApply={async (adjustments) => {
+                  // Apply stock changes locally — autosync will push to backend
+                  setParts((prev) => prev.map((p) => {
+                    const adj = adjustments.find((a) => a.part_id === p.id);
+                    return adj ? { ...p, stock: Math.max(0, adj.new_stock) } : p;
+                  }));
+                  // Best-effort: record an inventory_movements row per change
+                  for (const adj of adjustments) {
+                    apiPost("/api/inventory-movements", {
+                      part_id: adj.part_id,
+                      type: "adjust",
+                      qty: adj.delta,
+                      ref_type: "import",
+                      note: adj.reason,
+                    }).catch(() => {});
+                  }
+                }}
+              />
+            </Suspense>
+          </div>
+        )}
+
+        {/* POS simplified: sell, buy, adjust, import */}
       </div>
     );
   }
